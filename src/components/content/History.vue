@@ -12,7 +12,7 @@
         tabindex="0"
         @mousemove="rotateShip" @click="moveShip" @keydown="onKeyDown">
       <div class="absolute top-2 left-2 z-10 flex items-center gap-2">
-        <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }}</span></div>
+        <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
         <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
       </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
@@ -26,9 +26,12 @@
           ref="ufo"
           @click="ufoClicked"
           :style="ufoPos"
-          :class="{'bg-red-600 rounded-full': hit}"
+          :class="{'bg-red-600 rounded-full': hit, 'ufo-destroyed': ufoDestroyed}"
           class="absolute select-none hidden lg:block h-10 w-10 wobble transition-all cursor-crosshair"
       />
+      <div class="ufo-health-track" :style="{top: ufoPos.top, left: ufoPos.left, width: (parseFloat(ufoPos.width) * 0.8) + 'px', filter: ufoPos.filter, 'transition-duration': ufoPos['transition-duration']}">
+        <div class="ufo-health-fill" :style="{width: (ufoHealthRatio * 100) + '%', backgroundColor: ufoHealthColor}"></div>
+      </div>
 
     </div>
     <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500">
@@ -81,6 +84,10 @@ export default {
       hintVisible,
       muted,
       toggleMute,
+      level,
+      ufoHealthRatio,
+      ufoHealthColor,
+      ufoDestroyed,
       projectiles,
       warpFlashes,
       shipPos,
@@ -108,6 +115,10 @@ export default {
       bestScore,
       muted,
       toggleMute,
+      level,
+      ufoHealthRatio,
+      ufoHealthColor,
+      ufoDestroyed,
       projectiles,
       warpFlashes,
       hit,
@@ -239,6 +250,42 @@ export default {
 .warp-flash--active {
   transform: translate(-50%, -50%) scale(2);
   opacity: 0;
+}
+
+.ufo-health-track {
+  position: absolute;
+  height: 5px;
+  z-index: 11;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 3px;
+  overflow: hidden;
+  transform: translate(-2px, -10px);
+  pointer-events: none;
+  transition-property: width, filter;
+}
+
+.ufo-health-fill {
+  height: 100%;
+  transition: width 0.2s ease-out, background-color 0.2s ease-out;
+}
+
+.ufo-destroyed {
+  background: #fde047 !important;
+  border-radius: 9999px;
+  box-shadow: 0 0 24px 10px rgba(250, 204, 21, 0.85);
+  animation: ufo-destroyed-pulse 0.5s ease-out;
+}
+
+@keyframes ufo-destroyed-pulse {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.6);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 .stars {

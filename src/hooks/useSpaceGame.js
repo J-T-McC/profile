@@ -1,4 +1,4 @@
-import { ref, reactive, onUnmounted } from 'vue'
+import { ref, reactive, computed, onUnmounted } from 'vue'
 import useLocalStore from '@/hooks/useLocalStore'
 
 const UFO_MAX_SIZE = 75
@@ -17,8 +17,19 @@ const WARP_STRETCH = 1.7            // peak squash-and-stretch factor when a "fl
 const WARP_SETTLE_DURATION = 300    // ms for the stretch to ease back to normal
 const WARP_FLASH_FADE_DURATION = 380 // ms for the departure-point light burst to fade out
 
-const FLEE_RADIUS = 90              // px - cursor proximity (beyond the UFO's own radius) that spooks it
-const FLEE_COOLDOWN = 500           // ms - min gap between flee-teleports while the cursor lingers nearby
+const UFO_MAX_HEALTH = 10           // hits to destroy the UFO and advance a level
+const UFO_DESTROYED_FLASH_DURATION = 500 // ms - bigger flash played on a kill (vs. a regular hit)
+const KILL_BONUS_SCORE = 5          // extra points awarded on top of the +1 for the killing hit
+const LEVEL_DIFFICULTY_CAP = 10     // level at which reaction-time difficulty maxes out
+
+// "Reaction time" difficulty knobs - how alert/agile the UFO is, scaled by level from an
+// easy starting point up toward (and eventually past) a much more alert ceiling.
+const FLEE_COOLDOWN_START = 900     // ms - level 1: slow to react again after fleeing
+const FLEE_COOLDOWN_MIN = 250       // ms - reaction time floor at high levels
+const FLEE_RADIUS_START = 60        // px - level 1: cursor has to get quite close to spook it
+const FLEE_RADIUS_MAX = 130         // px - detection range ceiling at high levels
+const UFO_SPEED_MULTIPLIER_START = 0.7 // level 1: dodges away sluggishly
+const UFO_SPEED_MULTIPLIER_MAX = 1.6   // dodge speed ceiling at high levels
 
 export default function useSpaceGame () {
   const container = ref(null)
@@ -30,6 +41,18 @@ export default function useSpaceGame () {
   const hit = ref(false)
   const scorePulse = ref(false)
   const hintVisible = ref(true)
+
+  const level = ref(1)
+  const ufoHealth = ref(UFO_MAX_HEALTH)
+  const ufoDestroyed = ref(false)
+  let ufoDestroyedTimeoutId = null
+
+  const ufoHealthRatio = computed(() => ufoHealth.value / UFO_MAX_HEALTH)
+  const ufoHealthColor = computed(() => {
+    if (ufoHealthRatio.value > 0.6) return '#34d399' // green
+    if (ufoHealthRatio.value > 0.3) return '#fbbf24' // amber
+    return '#f87171' // red
+  })
 
   const highScoreStore = useLocalStore('spaceGame')
   bestScore.value = highScoreStore.get('bestScore', 0)
@@ -105,6 +128,14 @@ export default function useSpaceGame () {
     hintVisible.value = false
   }
 
+  // 0 at level 1, ramping to 1 by LEVEL_DIFFICULTY_CAP (and staying there beyond it) -
+  // drives all three "reaction time" difficulty knobs below off of a single curve.
+  const getLevelProgress = () => clamp((level.value - 1) / (LEVEL_DIFFICULTY_CAP - 1), 0, 1)
+
+  const getFleeCooldown = () => FLEE_COOLDOWN_START - getLevelProgress() * (FLEE_COOLDOWN_START - FLEE_COOLDOWN_MIN)
+  const getFleeRadius = () => FLEE_RADIUS_START + getLevelProgress() * (FLEE_RADIUS_MAX - FLEE_RADIUS_START)
+  const getUfoSpeedMultiplier = () => UFO_SPEED_MULTIPLIER_START + getLevelProgress() * (UFO_SPEED_MULTIPLIER_MAX - UFO_SPEED_MULTIPLIER_START)
+
   // --- Sound (synthesized via Web Audio - no external audio files) -------------------
 
   let audioCtx = null
@@ -154,6 +185,29 @@ export default function useSpaceGame () {
     noise.start()
   }
 
+  // A bigger, deeper boom for when the UFO's health finally runs out, distinct from the
+  // regular per-hit explosion.
+  const playDestroyedSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const duration = 0.45
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * duration, ctx.sampleRate)
+    const data = buffer.getChannelData(0)
+    for (let i = 0; i < data.length; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / data.length)
+    }
+    const noise = ctx.createBufferSource()
+    noise.buffer = buffer
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.setValueAtTime(500, ctx.currentTime)
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(0.35, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration)
+    noise.connect(filter).connect(gain).connect(ctx.destination)
+    noise.start()
+  }
+
   const randomizePosition = () => {
     if (!container.value) return
     const durationSeconds = Math.ceil(Math.random() * 3)
@@ -176,8 +230,9 @@ export default function useSpaceGame () {
     ufoPos.filter = `brightness(${brightness}%)`
 
     // Roughly match the pace of the old CSS-transition hops (which fully arrived in
-    // `durationSeconds`) so the continuous glide still feels like a "hop" of similar speed.
-    ufoFollowRate = 3 / durationSeconds
+    // `durationSeconds`) so the continuous glide still feels like a "hop" of similar speed,
+    // then scale by the current level's "reaction time" - sluggish early on, brisker later.
+    ufoFollowRate = (3 / durationSeconds) * getUfoSpeedMultiplier()
 
     // Clamp to the container's bounds so the UFO can't spawn (partially) off-screen.
     const containerWidth = container.value.offsetWidth
@@ -276,19 +331,40 @@ export default function useSpaceGame () {
   const registerHit = (projectile) => {
     projectile.state = 'hit'
     score.value++
-    hit.value = true
     scorePulse.value = true
-    playExplosionSound()
+
+    ufoHealth.value = Math.max(0, ufoHealth.value - 1)
+
+    if (ufoHealth.value === 0) {
+      // Destroyed - bigger flash/sound, level up (harder reaction time from here on),
+      // and a fresh full health bar for the next spawn.
+      score.value += KILL_BONUS_SCORE
+      playDestroyedSound()
+
+      ufoDestroyed.value = true
+      clearTimeout(ufoDestroyedTimeoutId)
+      ufoDestroyedTimeoutId = setTimeout(() => {
+        ufoDestroyed.value = false
+      }, UFO_DESTROYED_FLASH_DURATION)
+
+      level.value++
+      ufoHealth.value = UFO_MAX_HEALTH
+    } else {
+      playExplosionSound()
+      hit.value = true
+      clearTimeout(hitTimeoutId)
+      hitTimeoutId = setTimeout(() => {
+        hit.value = false
+      }, UFO_HIT_FLASH_DURATION)
+    }
+
+    // Either way, getting shot spooks it into an immediate dodge to a new spot.
+    randomizePosition()
 
     if (score.value > bestScore.value) {
       bestScore.value = score.value
       highScoreStore.set('bestScore', bestScore.value)
     }
-
-    clearTimeout(hitTimeoutId)
-    hitTimeoutId = setTimeout(() => {
-      hit.value = false
-    }, UFO_HIT_FLASH_DURATION)
 
     clearTimeout(scorePulseTimeoutId)
     scorePulseTimeoutId = setTimeout(() => {
@@ -444,10 +520,11 @@ export default function useSpaceGame () {
     }
 
     // Smarter UFO AI: keep evading for as long as the cursor lingers nearby, instead of
-    // only reacting once on mouseenter. Rate-limited so it doesn't teleport every frame.
-    if (ufoHitCircle && lastPointerX !== null && (time - lastFleeTime) >= FLEE_COOLDOWN) {
+    // only reacting once on mouseenter. Rate-limited so it doesn't teleport every frame -
+    // both the cooldown and detection radius scale with level (its "reaction time").
+    if (ufoHitCircle && lastPointerX !== null && (time - lastFleeTime) >= getFleeCooldown()) {
       const pointerDistance = Math.hypot(lastPointerX - ufoHitCircle.x, lastPointerY - ufoHitCircle.y)
-      if (pointerDistance <= FLEE_RADIUS + ufoHitCircle.radius) {
+      if (pointerDistance <= getFleeRadius() + ufoHitCircle.radius) {
         lastFleeTime = time
         randomizePosition()
       }
@@ -470,6 +547,7 @@ export default function useSpaceGame () {
     clearTimeout(hitTimeoutId)
     clearTimeout(scorePulseTimeoutId)
     clearTimeout(warpSettleTimeoutId)
+    clearTimeout(ufoDestroyedTimeoutId)
     if (rafId) cancelAnimationFrame(rafId)
   })
 
@@ -484,6 +562,11 @@ export default function useSpaceGame () {
     hintVisible,
     muted,
     toggleMute,
+    level,
+    ufoHealth,
+    ufoHealthRatio,
+    ufoHealthColor,
+    ufoDestroyed,
     projectiles,
     warpFlashes,
     shipPos,
