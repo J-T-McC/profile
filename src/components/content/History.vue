@@ -25,7 +25,6 @@
       <SvgUFO
           ref="ufo"
           @click="ufoClicked"
-          @mouseenter="randomizePosition"
           :style="ufoPos"
           :class="{'bg-red-600 rounded-full': hit}"
           class="absolute select-none hidden lg:block h-10 w-10 wobble transition-all cursor-crosshair"
@@ -86,7 +85,6 @@ export default {
       warpFlashes,
       shipPos,
       ufoPos,
-      randomizePosition,
       rotateShip,
       moveShip,
       onKeyDown,
@@ -99,7 +97,6 @@ export default {
     }
 
     return {
-      randomizePosition,
       ufoClicked,
       rotateShip,
       moveShip,

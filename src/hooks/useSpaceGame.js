@@ -3,7 +3,7 @@ import useLocalStore from '@/hooks/useLocalStore'
 
 const UFO_MAX_SIZE = 75
 const SHIP_FOLLOW_RATE = 12         // 1/s - how fast the ship closes the gap to its target (higher = snappier)
-const SHIP_ARRIVE_THRESHOLD = 0.5   // px - snap to target once this close, instead of easing forever
+const ARRIVE_THRESHOLD = 0.5        // px - snap to target once this close, instead of easing forever
 const PROJECTILE_SPEED = 900        // px/s
 const PROJECTILE_MAX_DISTANCE = 1200 // px travelled before a shot is considered a miss
 const PROJECTILE_HIT_PADDING = 10   // px of extra forgiveness added to the UFO's on-screen radius
@@ -16,6 +16,9 @@ const MISS_ANIM_DURATION = 160      // how long a projectile's fade-out plays be
 const WARP_STRETCH = 1.7            // peak squash-and-stretch factor when a "fly here" click lands
 const WARP_SETTLE_DURATION = 300    // ms for the stretch to ease back to normal
 const WARP_FLASH_FADE_DURATION = 380 // ms for the departure-point light burst to fade out
+
+const FLEE_RADIUS = 90              // px - cursor proximity (beyond the UFO's own radius) that spooks it
+const FLEE_COOLDOWN = 500           // ms - min gap between flee-teleports while the cursor lingers nearby
 
 export default function useSpaceGame () {
   const container = ref(null)
@@ -65,9 +68,29 @@ export default function useSpaceGame () {
   let shipTargetX = 0
   let shipTargetY = 0
 
-  const ufoPos = ref({
+  // Rendered UFO style - top/left are driven every animation frame (see tick()) just
+  // like the ship, so repeated retargeting (continuous flee) blends smoothly instead of
+  // restarting a fresh CSS transition mid-flight. width/height/filter still CSS-transition
+  // on their own timer for the size/depth-illusion morph between hops.
+  const ufoPos = reactive({
     top: '-1000px',
+    left: '-1000px',
+    'transition-property': 'width, height, filter',
   })
+
+  // Numeric UFO position/target/speed driving the per-frame movement loop, same
+  // coordinate space as everything else (both container-relative here).
+  let ufoX = -1000
+  let ufoY = -1000
+  let ufoTargetX = -1000
+  let ufoTargetY = -1000
+  let ufoFollowRate = 3 // 1/s - recomputed per hop in randomizePosition() to roughly match its duration
+
+  // Last known cursor position (same coordinate space as the ship/UFO), used so the
+  // UFO can continuously evade a lingering cursor rather than only reacting once.
+  let lastPointerX = null
+  let lastPointerY = null
+  let lastFleeTime = 0
 
   let animationTimeoutId = null
   let hitTimeoutId = null
@@ -133,7 +156,8 @@ export default function useSpaceGame () {
 
   const randomizePosition = () => {
     if (!container.value) return
-    const duration = Math.ceil(Math.random() * 3) + 's'
+    const durationSeconds = Math.ceil(Math.random() * 3)
+    const duration = durationSeconds + 's'
     const offset = Math.random() < 0.5 ? -100 : 100
 
     const size = Math.ceil(Math.random() * UFO_MAX_SIZE)
@@ -142,26 +166,24 @@ export default function useSpaceGame () {
 
     const zIndexThreshold = 0.8
 
-    const sizeStyles = {
-      height: `${size}px`,
-      width: `${size}px`,
-      'z-index': size >= (UFO_MAX_SIZE * zIndexThreshold) ? 12 : 1,
-      filter: `brightness(${brightness}%)`,
-    }
+    // Position now glides continuously in tick() (see ufoFollowRate) rather than via a
+    // fresh CSS transition per hop - only the size/depth-illusion morph still uses one.
+    ufoPos['animation-duration'] = duration
+    ufoPos['transition-duration'] = duration
+    ufoPos.height = `${size}px`
+    ufoPos.width = `${size}px`
+    ufoPos['z-index'] = size >= (UFO_MAX_SIZE * zIndexThreshold) ? 12 : 1
+    ufoPos.filter = `brightness(${brightness}%)`
+
+    // Roughly match the pace of the old CSS-transition hops (which fully arrived in
+    // `durationSeconds`) so the continuous glide still feels like a "hop" of similar speed.
+    ufoFollowRate = 3 / durationSeconds
 
     // Clamp to the container's bounds so the UFO can't spawn (partially) off-screen.
     const containerWidth = container.value.offsetWidth
     const containerHeight = container.value.offsetHeight
-    const top = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - size, 0))
-    const left = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - size, 0))
-
-    ufoPos.value = {
-      top: top + 'px',
-      left: left + 'px',
-      'animation-duration': duration,
-      'transition-duration': duration,
-      ...sizeStyles
-    }
+    ufoTargetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - size, 0))
+    ufoTargetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - size, 0))
   }
 
   // Combines the ship's current facing angle with its current warp-stretch factor into
@@ -178,6 +200,9 @@ export default function useSpaceGame () {
     dismissHint()
 
     const containerOffset = container.value.getBoundingClientRect()
+
+    lastPointerX = event.x
+    lastPointerY = event.y - containerOffset.top
 
     const pointerBox = ship.value.getBoundingClientRect(),
         centerY = pointerBox.top + ship.value.offsetHeight - containerOffset.top,
@@ -365,7 +390,7 @@ export default function useSpaceGame () {
     const dx = shipTargetX - shipX
     const dy = shipTargetY - shipY
     const distance = Math.hypot(dx, dy)
-    if (distance > SHIP_ARRIVE_THRESHOLD) {
+    if (distance > ARRIVE_THRESHOLD) {
       const followT = 1 - Math.exp(-SHIP_FOLLOW_RATE * dt)
       shipX += dx * followT
       shipY += dy * followT
@@ -375,6 +400,24 @@ export default function useSpaceGame () {
     }
     shipPos.left = shipX + 'px'
     shipPos.top = shipY + 'px'
+
+    // Ease the UFO toward its latest randomized target the same way - continuously
+    // converging every frame means repeated retargeting (continuous flee) blends
+    // smoothly, instead of interrupting a fresh CSS transition mid-flight and causing
+    // a visible velocity jump each time a new hop starts.
+    const ufoDx = ufoTargetX - ufoX
+    const ufoDy = ufoTargetY - ufoY
+    const ufoDistance = Math.hypot(ufoDx, ufoDy)
+    if (ufoDistance > ARRIVE_THRESHOLD) {
+      const ufoFollowT = 1 - Math.exp(-ufoFollowRate * dt)
+      ufoX += ufoDx * ufoFollowT
+      ufoY += ufoDy * ufoFollowT
+    } else {
+      ufoX = ufoTargetX
+      ufoY = ufoTargetY
+    }
+    ufoPos.left = ufoX + 'px'
+    ufoPos.top = ufoY + 'px'
 
     // Advance in-flight projectiles and check each against the UFO's live position.
     const ufoHitCircle = getUfoHitCircle()
@@ -397,6 +440,16 @@ export default function useSpaceGame () {
 
       if (projectile.travelled >= PROJECTILE_MAX_DISTANCE) {
         registerMiss(projectile)
+      }
+    }
+
+    // Smarter UFO AI: keep evading for as long as the cursor lingers nearby, instead of
+    // only reacting once on mouseenter. Rate-limited so it doesn't teleport every frame.
+    if (ufoHitCircle && lastPointerX !== null && (time - lastFleeTime) >= FLEE_COOLDOWN) {
+      const pointerDistance = Math.hypot(lastPointerX - ufoHitCircle.x, lastPointerY - ufoHitCircle.y)
+      if (pointerDistance <= FLEE_RADIUS + ufoHitCircle.radius) {
+        lastFleeTime = time
+        randomizePosition()
       }
     }
 
