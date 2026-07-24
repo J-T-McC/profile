@@ -13,6 +13,10 @@ const SCORE_PULSE_DURATION = 300
 const HIT_ANIM_DURATION = 260       // how long a projectile's "hit" burst plays before removal
 const MISS_ANIM_DURATION = 160      // how long a projectile's fade-out plays before removal
 
+const WARP_STRETCH = 1.7            // peak squash-and-stretch factor when a "fly here" click lands
+const WARP_SETTLE_DURATION = 300    // ms for the stretch to ease back to normal
+const WARP_FLASH_FADE_DURATION = 380 // ms for the departure-point light burst to fade out
+
 export default function useSpaceGame () {
   const container = ref(null)
   const ship = ref(null)
@@ -27,11 +31,22 @@ export default function useSpaceGame () {
   const highScoreStore = useLocalStore('spaceGame')
   bestScore.value = highScoreStore.get('bestScore', 0)
 
+  const muted = ref(highScoreStore.get('muted', false))
+  const toggleMute = () => {
+    muted.value = !muted.value
+    highScoreStore.set('muted', muted.value)
+  }
+
   const projectiles = reactive([])
   let nextProjectileId = 0
 
+  const warpFlashes = reactive([])
+  let nextWarpFlashId = 0
+  let warpSettleTimeoutId = null
+
   const shipAngle = ref(0)
   let hasFacing = false
+  let shipStretch = 1 // 1 = normal; briefly pushed higher for the warp squash-and-stretch pop
 
   // Rendered ship style - top/left are driven every animation frame by the numeric
   // position below; only the rotation transform gets a CSS transition (for smoothing
@@ -67,6 +82,55 @@ export default function useSpaceGame () {
     hintVisible.value = false
   }
 
+  // --- Sound (synthesized via Web Audio - no external audio files) -------------------
+
+  let audioCtx = null
+
+  const getAudioContext = () => {
+    if (muted.value) return null
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextClass) return null
+    if (!audioCtx) audioCtx = new AudioContextClass()
+    if (audioCtx.state === 'suspended') audioCtx.resume()
+    return audioCtx
+  }
+
+  const playLaserSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'square'
+    osc.frequency.setValueAtTime(880, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(220, ctx.currentTime + 0.12)
+    gain.gain.setValueAtTime(0.08, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.13)
+  }
+
+  const playExplosionSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const duration = 0.25
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * duration, ctx.sampleRate)
+    const data = buffer.getChannelData(0)
+    for (let i = 0; i < data.length; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / data.length)
+    }
+    const noise = ctx.createBufferSource()
+    noise.buffer = buffer
+    const filter = ctx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.setValueAtTime(1200, ctx.currentTime)
+    const gain = ctx.createGain()
+    gain.gain.setValueAtTime(0.25, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration)
+    noise.connect(filter).connect(gain).connect(ctx.destination)
+    noise.start()
+  }
+
   const randomizePosition = () => {
     if (!container.value) return
     const duration = Math.ceil(Math.random() * 3) + 's'
@@ -100,6 +164,15 @@ export default function useSpaceGame () {
     }
   }
 
+  // Combines the ship's current facing angle with its current warp-stretch factor into
+  // a single transform - kept in one place so rotateShip and the warp effect (which run
+  // independently of each other) never stomp on each other's half of the transform string.
+  // The 1/shipStretch on the perpendicular axis keeps the "volume" roughly constant
+  // (classic squash-and-stretch), so a taller ship also looks a touch narrower.
+  const applyShipTransform = () => {
+    shipPos.transform = `rotate(${shipAngle.value}deg) scale(${1 / shipStretch}, ${shipStretch})`
+  }
+
   const rotateShip = (event) => {
     if (!container.value || !ship.value) return
     dismissHint()
@@ -115,7 +188,50 @@ export default function useSpaceGame () {
 
     shipAngle.value = degree
     hasFacing = true
-    shipPos.transform = `rotate(${degree}deg)`
+    applyShipTransform()
+  }
+
+  const spawnWarpFlash = (x, y) => {
+    const id = nextWarpFlashId++
+    warpFlashes.push({ id, x, y, active: false })
+
+    // Pushed in on the next tick so the CSS transition (rather than the initial state)
+    // is what animates it from a small bright dot into a fading burst.
+    setTimeout(() => {
+      const flash = warpFlashes.find(f => f.id === id)
+      if (flash) flash.active = true
+    }, 10)
+
+    setTimeout(() => {
+      const index = warpFlashes.findIndex(f => f.id === id)
+      if (index !== -1) warpFlashes.splice(index, 1)
+    }, WARP_FLASH_FADE_DURATION + 20)
+  }
+
+  // Purely a visual flourish for a "fly here" click - stretches the ship along its
+  // facing axis then eases back to normal, plus a light burst at the departure point.
+  // Doesn't touch shipX/Y/target at all, so it can't affect actual movement.
+  const triggerWarpEffect = () => {
+    spawnWarpFlash(shipX, shipY)
+
+    // Snap to the stretched pose instantly (no transition), then let a transition ease
+    // it back to normal - a quick "warp stretch" pop rather than a gradual stretch.
+    shipPos['transition-duration'] = '0s'
+    shipStretch = WARP_STRETCH
+    applyShipTransform()
+
+    requestAnimationFrame(() => {
+      shipPos['transition-duration'] = `${WARP_SETTLE_DURATION}ms`
+      shipStretch = 1
+      applyShipTransform()
+    })
+
+    // Rotation normally responds within 0.1s; restore that after the warp settles so
+    // the brief slower transition here doesn't linger and make aiming feel sluggish.
+    clearTimeout(warpSettleTimeoutId)
+    warpSettleTimeoutId = setTimeout(() => {
+      shipPos['transition-duration'] = '0.1s'
+    }, WARP_SETTLE_DURATION + 20)
   }
 
   // The UFO glides between spawn points via its own CSS transition, so its live
@@ -137,6 +253,7 @@ export default function useSpaceGame () {
     score.value++
     hit.value = true
     scorePulse.value = true
+    playExplosionSound()
 
     if (score.value > bestScore.value) {
       bestScore.value = score.value
@@ -175,6 +292,7 @@ export default function useSpaceGame () {
   const fireAt = (originX, originY, directionRadians) => {
     if (!canFire()) return
     lastFireTime = performance.now()
+    playLaserSound()
 
     projectiles.push({
       id: nextProjectileId++,
@@ -227,6 +345,7 @@ export default function useSpaceGame () {
     const containerOffset = container.value.getBoundingClientRect()
     shipTargetX = event.x
     shipTargetY = event.y - containerOffset.top
+    triggerWarpEffect()
   }
 
   const tick = (time) => {
@@ -297,6 +416,7 @@ export default function useSpaceGame () {
     clearTimeout(animationTimeoutId)
     clearTimeout(hitTimeoutId)
     clearTimeout(scorePulseTimeoutId)
+    clearTimeout(warpSettleTimeoutId)
     if (rafId) cancelAnimationFrame(rafId)
   })
 
@@ -309,7 +429,10 @@ export default function useSpaceGame () {
     hit,
     scorePulse,
     hintVisible,
+    muted,
+    toggleMute,
     projectiles,
+    warpFlashes,
     shipPos,
     ufoPos,
     randomizePosition,

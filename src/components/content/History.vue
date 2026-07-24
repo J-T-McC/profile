@@ -11,10 +11,14 @@
         v-if="mode.isDarkMode.value && !isMobileOnly"
         tabindex="0"
         @mousemove="rotateShip" @click="moveShip" @keydown="onKeyDown">
-      <div v-if="score || bestScore" class="gamify absolute top-2 left-2 z-10 text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }}</span></div>
+      <div class="absolute top-2 left-2 z-10 flex items-center gap-2">
+        <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }}</span></div>
+        <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
+      </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
+      <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
       <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
       <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state"/>
 
@@ -76,7 +80,10 @@ export default {
       hit,
       scorePulse,
       hintVisible,
+      muted,
+      toggleMute,
       projectiles,
+      warpFlashes,
       shipPos,
       ufoPos,
       randomizePosition,
@@ -102,7 +109,10 @@ export default {
       ufo,
       score,
       bestScore,
+      muted,
+      toggleMute,
       projectiles,
+      warpFlashes,
       hit,
       scorePulse,
       hintVisible,
@@ -210,6 +220,28 @@ export default {
 
 .score-pulse {
   animation: pulse 0.3s ease-in-out;
+}
+
+.mute-toggle {
+  line-height: 1;
+}
+
+.warp-flash {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  z-index: 18;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(224, 242, 254, 0.95) 0%, rgba(96, 165, 250, 0.65) 40%, rgba(96, 165, 250, 0) 72%);
+  transform: translate(-50%, -50%) scale(0.2);
+  opacity: 1;
+  pointer-events: none;
+  transition: transform 0.38s ease-out, opacity 0.38s ease-out;
+}
+
+.warp-flash--active {
+  transform: translate(-50%, -50%) scale(2);
+  opacity: 0;
 }
 
 .stars {
