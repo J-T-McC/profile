@@ -18,18 +18,21 @@ const WARP_SETTLE_DURATION = 300    // ms for the stretch to ease back to normal
 const WARP_FLASH_FADE_DURATION = 380 // ms for the departure-point light burst to fade out
 
 const UFO_MAX_HEALTH = 10           // hits to destroy the UFO and advance a level
-const UFO_DESTROYED_FLASH_DURATION = 500 // ms - bigger flash played on a kill (vs. a regular hit)
+const UFO_DESTROYED_FLASH_DURATION = 1200 // ms - bigger flash played on a kill (vs. a regular hit)
+const UFO_RESPAWN_DELAY = 2500      // ms the UFO stays gone after being destroyed, before it respawns
 const KILL_BONUS_SCORE = 5          // extra points awarded on top of the +1 for the killing hit
 const LEVEL_DIFFICULTY_CAP = 10     // level at which reaction-time difficulty maxes out
 
 // "Reaction time" difficulty knobs - how alert/agile the UFO is, scaled by level from an
-// easy starting point up toward (and eventually past) a much more alert ceiling.
-const FLEE_COOLDOWN_START = 900     // ms - level 1: slow to react again after fleeing
+// easy starting point up toward (and eventually past) a much more alert ceiling. Level 1
+// is intentionally quite forgiving - slow to notice you, and lazy once it does - so the
+// ramp up to the harder ceiling is more noticeable.
+const FLEE_COOLDOWN_START = 1800    // ms - level 1: very slow to react again after fleeing
 const FLEE_COOLDOWN_MIN = 250       // ms - reaction time floor at high levels
-const FLEE_RADIUS_START = 60        // px - level 1: cursor has to get quite close to spook it
+const FLEE_RADIUS_START = 35        // px - level 1: cursor has to get quite close to spook it
 const FLEE_RADIUS_MAX = 130         // px - detection range ceiling at high levels
-const UFO_SPEED_MULTIPLIER_START = 0.7 // level 1: dodges away sluggishly
-const UFO_SPEED_MULTIPLIER_MAX = 1.6   // dodge speed ceiling at high levels
+const UFO_SPEED_MULTIPLIER_START = 0.35 // level 1: dodges away sluggishly
+const UFO_SPEED_MULTIPLIER_MAX = 1.6    // dodge speed ceiling at high levels
 
 export default function useSpaceGame () {
   const container = ref(null)
@@ -45,7 +48,9 @@ export default function useSpaceGame () {
   const level = ref(1)
   const ufoHealth = ref(UFO_MAX_HEALTH)
   const ufoDestroyed = ref(false)
+  const ufoVisible = ref(true)
   let ufoDestroyedTimeoutId = null
+  let respawnTimeoutId = null
 
   const ufoHealthRatio = computed(() => ufoHealth.value / UFO_MAX_HEALTH)
   const ufoHealthColor = computed(() => {
@@ -190,7 +195,7 @@ export default function useSpaceGame () {
   const playDestroyedSound = () => {
     const ctx = getAudioContext()
     if (!ctx) return
-    const duration = 0.45
+    const duration = 1.1
     const buffer = ctx.createBuffer(1, ctx.sampleRate * duration, ctx.sampleRate)
     const data = buffer.getChannelData(0)
     for (let i = 0; i < data.length; i++) {
@@ -200,7 +205,10 @@ export default function useSpaceGame () {
     noise.buffer = buffer
     const filter = ctx.createBiquadFilter()
     filter.type = 'lowpass'
+    // Descending rumble (500Hz -> 90Hz) rather than a static filter, for a deeper,
+    // more drawn-out boom befitting an actual kill rather than a regular hit.
     filter.frequency.setValueAtTime(500, ctx.currentTime)
+    filter.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + duration)
     const gain = ctx.createGain()
     gain.gain.setValueAtTime(0.35, ctx.currentTime)
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration)
@@ -337,7 +345,7 @@ export default function useSpaceGame () {
 
     if (ufoHealth.value === 0) {
       // Destroyed - bigger flash/sound, level up (harder reaction time from here on),
-      // and a fresh full health bar for the next spawn.
+      // then stay gone for a beat before respawning elsewhere at full health.
       score.value += KILL_BONUS_SCORE
       playDestroyedSound()
 
@@ -349,6 +357,13 @@ export default function useSpaceGame () {
 
       level.value++
       ufoHealth.value = UFO_MAX_HEALTH
+      ufoVisible.value = false
+
+      clearTimeout(respawnTimeoutId)
+      respawnTimeoutId = setTimeout(() => {
+        randomizePosition()
+        ufoVisible.value = true
+      }, UFO_RESPAWN_DELAY)
     } else {
       playExplosionSound()
       hit.value = true
@@ -356,10 +371,10 @@ export default function useSpaceGame () {
       hitTimeoutId = setTimeout(() => {
         hit.value = false
       }, UFO_HIT_FLASH_DURATION)
-    }
 
-    // Either way, getting shot spooks it into an immediate dodge to a new spot.
-    randomizePosition()
+      // Getting shot (but not destroyed) spooks it into an immediate dodge to a new spot.
+      randomizePosition()
+    }
 
     if (score.value > bestScore.value) {
       bestScore.value = score.value
@@ -548,6 +563,7 @@ export default function useSpaceGame () {
     clearTimeout(scorePulseTimeoutId)
     clearTimeout(warpSettleTimeoutId)
     clearTimeout(ufoDestroyedTimeoutId)
+    clearTimeout(respawnTimeoutId)
     if (rafId) cancelAnimationFrame(rafId)
   })
 
@@ -567,6 +583,7 @@ export default function useSpaceGame () {
     ufoHealthRatio,
     ufoHealthColor,
     ufoDestroyed,
+    ufoVisible,
     projectiles,
     warpFlashes,
     shipPos,

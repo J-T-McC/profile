@@ -10,7 +10,7 @@
         class="hidden lg:block h-full w-full absolute top-0 left-0"
         v-if="mode.isDarkMode.value && !isMobileOnly"
         tabindex="0"
-        @mousemove="rotateShip" @click="moveShip" @keydown="onKeyDown">
+        @mousemove="rotateShip" @click="moveShip">
       <div class="absolute top-2 left-2 z-10 flex items-center gap-2">
         <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
         <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
@@ -23,13 +23,14 @@
       <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state"/>
 
       <SvgUFO
+          v-show="ufoVisible"
           ref="ufo"
           @click="ufoClicked"
           :style="ufoPos"
           :class="{'bg-red-600 rounded-full': hit, 'ufo-destroyed': ufoDestroyed}"
           class="absolute select-none hidden lg:block h-10 w-10 wobble transition-all cursor-crosshair"
       />
-      <div class="ufo-health-track" :style="{top: ufoPos.top, left: ufoPos.left, width: (parseFloat(ufoPos.width) * 0.8) + 'px', filter: ufoPos.filter, 'transition-duration': ufoPos['transition-duration']}">
+      <div v-show="ufoVisible" class="ufo-health-track" :style="{top: ufoPos.top, left: ufoPos.left, width: (parseFloat(ufoPos.width) * 0.8) + 'px', filter: ufoPos.filter, 'transition-duration': ufoPos['transition-duration']}">
         <div class="ufo-health-fill" :style="{width: (ufoHealthRatio * 100) + '%', backgroundColor: ufoHealthColor}"></div>
       </div>
 
@@ -61,6 +62,7 @@ import useSpaceGame from '@/hooks/useSpaceGame'
 import SvgUFO from '@/components/icons/SvgUFO'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
+import { onMounted, onUnmounted } from 'vue'
 
 export default {
   name: 'History',
@@ -88,6 +90,7 @@ export default {
       ufoHealthRatio,
       ufoHealthColor,
       ufoDestroyed,
+      ufoVisible,
       projectiles,
       warpFlashes,
       shipPos,
@@ -103,11 +106,33 @@ export default {
       scheduleUfoMovement()
     }
 
+    // Bound on window (rather than just the small game overlay) so a Space press still
+    // reaches the game - and gets its default page-scroll prevented - no matter what
+    // currently has focus. Clicking a plain card-row div (not a link/button) doesn't
+    // focus anything in particular, so a listener relying on event bubbling from a
+    // focused descendant never saw those keydowns at all. No-ops entirely when the game
+    // isn't active, or when a real text field is focused elsewhere on the page.
+    const onWindowKeyDown = (event) => {
+      if (!mode.isDarkMode.value || isMobileOnly) return
+
+      const targetTag = event.target?.tagName
+      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || event.target?.isContentEditable) return
+
+      onKeyDown(event)
+    }
+
+    onMounted(() => {
+      window.addEventListener('keydown', onWindowKeyDown)
+    })
+
+    onUnmounted(() => {
+      window.removeEventListener('keydown', onWindowKeyDown)
+    })
+
     return {
       ufoClicked,
       rotateShip,
       moveShip,
-      onKeyDown,
       shipPos,
       ship,
       ufo,
@@ -119,6 +144,7 @@ export default {
       ufoHealthRatio,
       ufoHealthColor,
       ufoDestroyed,
+      ufoVisible,
       projectiles,
       warpFlashes,
       hit,
@@ -273,15 +299,21 @@ export default {
   background: #fde047 !important;
   border-radius: 9999px;
   box-shadow: 0 0 24px 10px rgba(250, 204, 21, 0.85);
-  animation: ufo-destroyed-pulse 0.5s ease-out;
+  animation: ufo-destroyed-pulse 1.2s ease-out;
 }
 
 @keyframes ufo-destroyed-pulse {
   0% {
     transform: scale(1);
   }
-  30% {
-    transform: scale(1.6);
+  15% {
+    transform: scale(1.7);
+  }
+  35% {
+    transform: scale(1.1);
+  }
+  55% {
+    transform: scale(1.5);
   }
   100% {
     transform: scale(1);
