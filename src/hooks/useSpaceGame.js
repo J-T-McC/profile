@@ -7,6 +7,7 @@ const ARRIVE_THRESHOLD = 0.5        // px - snap to target once this close, inst
 const PROJECTILE_SPEED = 900        // px/s
 const PROJECTILE_MAX_DISTANCE = 1200 // px travelled before a shot is considered a miss
 const PROJECTILE_HIT_PADDING = 10   // px of extra forgiveness added to the UFO's on-screen radius
+const PROJECTILE_INTERCEPT_RADIUS = 16 // px - how close a player shot must get to shoot down an alien one
 const FIRE_COOLDOWN = 300           // ms between shots, shared by mouse and keyboard fire
 const UFO_HIT_FLASH_DURATION = 1000 // red flash on the UFO itself when hit
 const SCORE_PULSE_DURATION = 300
@@ -34,6 +35,18 @@ const FLEE_RADIUS_MAX = 130         // px - detection range ceiling at high leve
 const UFO_SPEED_MULTIPLIER_START = 0.35 // level 1: dodges away sluggishly
 const UFO_SPEED_MULTIPLIER_MAX = 1.6    // dodge speed ceiling at high levels
 
+// The UFO's return fire - unlocked at ALIEN_FIRE_MIN_LEVEL. There's no player health, so
+// getting hit instead heals the UFO by 1 - fires rarely right when it unlocks, and more
+// often at higher levels, same "reaction time" ramp as the evasion knobs above. Kept
+// deliberately modest at both ends - once multiple UFOs are in play at once, the combined
+// fire rate will climb on its own without any single one needing to be this aggressive.
+const ALIEN_FIRE_MIN_LEVEL = 3
+const ALIEN_FIRE_COOLDOWN_START = 10000 // ms - quite infrequent right when it unlocks
+const ALIEN_FIRE_COOLDOWN_MIN = 3000    // ms - still just once every few seconds at max difficulty
+const ALIEN_PROJECTILE_SPEED = 650      // px/s - a bit slower than the player's shots, so it's dodgeable
+const ALIEN_HEAL_AMOUNT = 1             // HP restored to the UFO per successful hit
+const SHIP_HIT_FLASH_DURATION = 400     // ms - brief flash on the ship when an alien shot connects
+
 export default function useSpaceGame () {
   const container = ref(null)
   const ship = ref(null)
@@ -51,6 +64,13 @@ export default function useSpaceGame () {
   const ufoVisible = ref(true)
   let ufoDestroyedTimeoutId = null
   let respawnTimeoutId = null
+
+  // Dev/testing cheat code - type "level" followed by a number then Enter (e.g.
+  // "level5" + Enter) to jump straight to that level instead of grinding up to it.
+  let cheatBuffer = ''
+  let lastCheatKeyTime = 0
+  const CHEAT_BUFFER_TIMEOUT = 3000 // ms - stale buffer resets after a pause
+  const CHEAT_LEVEL_PATTERN = /level\s*(\d+)$/i
 
   const ufoHealthRatio = computed(() => ufoHealth.value / UFO_MAX_HEALTH)
   const ufoHealthColor = computed(() => {
@@ -78,6 +98,10 @@ export default function useSpaceGame () {
   const shipAngle = ref(0)
   let hasFacing = false
   let shipStretch = 1 // 1 = normal; briefly pushed higher for the warp squash-and-stretch pop
+
+  const shipHit = ref(false) // brief flash when the alien's return fire connects
+  let shipHitTimeoutId = null
+  let alienFireTimeoutId = null
 
   // Rendered ship style - top/left are driven every animation frame by the numeric
   // position below; only the rotation transform gets a CSS transition (for smoothing
@@ -140,6 +164,12 @@ export default function useSpaceGame () {
   const getFleeCooldown = () => FLEE_COOLDOWN_START - getLevelProgress() * (FLEE_COOLDOWN_START - FLEE_COOLDOWN_MIN)
   const getFleeRadius = () => FLEE_RADIUS_START + getLevelProgress() * (FLEE_RADIUS_MAX - FLEE_RADIUS_START)
   const getUfoSpeedMultiplier = () => UFO_SPEED_MULTIPLIER_START + getLevelProgress() * (UFO_SPEED_MULTIPLIER_MAX - UFO_SPEED_MULTIPLIER_START)
+
+  // 0 right when return fire unlocks (ALIEN_FIRE_MIN_LEVEL), ramping to 1 by
+  // LEVEL_DIFFICULTY_CAP - separate curve from getLevelProgress() since it only starts
+  // counting from level 3, not level 1.
+  const getAlienFireProgress = () => clamp((level.value - ALIEN_FIRE_MIN_LEVEL) / (LEVEL_DIFFICULTY_CAP - ALIEN_FIRE_MIN_LEVEL), 0, 1)
+  const getAlienFireCooldown = () => ALIEN_FIRE_COOLDOWN_START - getAlienFireProgress() * (ALIEN_FIRE_COOLDOWN_START - ALIEN_FIRE_COOLDOWN_MIN)
 
   // --- Sound (synthesized via Web Audio - no external audio files) -------------------
 
@@ -214,6 +244,57 @@ export default function useSpaceGame () {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration)
     noise.connect(filter).connect(gain).connect(ctx.destination)
     noise.start()
+  }
+
+  // The UFO's own return shot - a lower, coarser sawtooth sweep so it reads as distinct
+  // from (and a little more ominous than) the player's own laser.
+  const playAlienLaserSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sawtooth'
+    osc.frequency.setValueAtTime(300, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(90, ctx.currentTime + 0.18)
+    gain.gain.setValueAtTime(0.08, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.19)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.2)
+  }
+
+  // A brighter, rising chime for when the UFO heals off a return-fire hit - distinct
+  // from the explosion sounds so a heal doesn't sound like damage.
+  const playHealSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(440, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15)
+    gain.gain.setValueAtTime(0.1, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.2)
+  }
+
+  // A quick, neutral "tink" for a player shot shooting down an alien one mid-air -
+  // distinct from the explosion/heal/laser sounds since neither side actually landed.
+  const playInterceptSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(1200, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(600, ctx.currentTime + 0.08)
+    gain.gain.setValueAtTime(0.12, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.09)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.1)
   }
 
   const randomizePosition = () => {
@@ -336,6 +417,20 @@ export default function useSpaceGame () {
     }
   }
 
+  // Mirrors getUfoHitCircle() but for the player's own ship, so the UFO's return fire
+  // can check for a hit against its actual on-screen position/size.
+  const getShipHitCircle = () => {
+    if (!ship.value || !container.value) return null
+    const shipRect = ship.value.getBoundingClientRect()
+    const containerOffset = container.value.getBoundingClientRect()
+
+    return {
+      x: shipRect.left + shipRect.width / 2,
+      y: (shipRect.top + shipRect.height / 2) - containerOffset.top,
+      radius: Math.max(shipRect.width, shipRect.height) / 2 + PROJECTILE_HIT_PADDING,
+    }
+  }
+
   const registerHit = (projectile) => {
     projectile.state = 'hit'
     score.value++
@@ -400,6 +495,43 @@ export default function useSpaceGame () {
     }, MISS_ANIM_DURATION)
   }
 
+  // The UFO's return fire connecting - instead of costing the player anything (there's
+  // no player health), it heals the UFO back up, capped at full health.
+  const registerAlienHit = (projectile) => {
+    projectile.state = 'hit'
+    ufoHealth.value = Math.min(UFO_MAX_HEALTH, ufoHealth.value + ALIEN_HEAL_AMOUNT)
+    playHealSound()
+
+    shipHit.value = true
+    clearTimeout(shipHitTimeoutId)
+    shipHitTimeoutId = setTimeout(() => {
+      shipHit.value = false
+    }, SHIP_HIT_FLASH_DURATION)
+
+    setTimeout(() => {
+      const index = projectiles.indexOf(projectile)
+      if (index !== -1) projectiles.splice(index, 1)
+    }, HIT_ANIM_DURATION)
+  }
+
+  // A player shot getting close enough to an in-flight alien shot destroys both -
+  // lets the player shoot down incoming fire before it reaches (and heals) the UFO.
+  const registerIntercept = (alienShot, playerShot) => {
+    alienShot.state = 'intercepted'
+    playerShot.state = 'intercepted'
+    playInterceptSound()
+
+    setTimeout(() => {
+      const index = projectiles.indexOf(alienShot)
+      if (index !== -1) projectiles.splice(index, 1)
+    }, HIT_ANIM_DURATION)
+
+    setTimeout(() => {
+      const index = projectiles.indexOf(playerShot)
+      if (index !== -1) projectiles.splice(index, 1)
+    }, HIT_ANIM_DURATION)
+  }
+
   const canFire = () => (performance.now() - lastFireTime) >= FIRE_COOLDOWN
 
   // Spawns a real projectile travelling in a straight line from (originX, originY) along
@@ -412,6 +544,7 @@ export default function useSpaceGame () {
 
     projectiles.push({
       id: nextProjectileId++,
+      owner: 'player',
       x: originX,
       y: originY,
       vx: Math.sin(directionRadians) * PROJECTILE_SPEED,
@@ -419,6 +552,40 @@ export default function useSpaceGame () {
       travelled: 0,
       state: 'flying',
     })
+  }
+
+  // The UFO's own return shot, unlocked at ALIEN_FIRE_MIN_LEVEL - aims directly at the
+  // ship's current position (no lead/prediction, same simple aim model as the player's
+  // own shots) and travels a bit slower than the player's, so it's dodgeable.
+  const fireAlienShot = () => {
+    if (!ufo.value?.$el || !container.value || !ufoVisible.value) return
+
+    const radians = Math.atan2(shipX - ufoX, shipY - ufoY)
+    playAlienLaserSound()
+
+    projectiles.push({
+      id: nextProjectileId++,
+      owner: 'alien',
+      x: ufoX,
+      y: ufoY,
+      vx: Math.sin(radians) * ALIEN_PROJECTILE_SPEED,
+      vy: Math.cos(radians) * ALIEN_PROJECTILE_SPEED,
+      travelled: 0,
+      state: 'flying',
+    })
+  }
+
+  // Keeps rescheduling regardless of level - only actually fires once level reaches
+  // ALIEN_FIRE_MIN_LEVEL - so return fire kicks in immediately once the player reaches
+  // that level, without needing anything to restart the scheduler.
+  const scheduleAlienFire = () => {
+    const delay = getAlienFireCooldown() * (0.75 + Math.random() * 0.5)
+    alienFireTimeoutId = setTimeout(() => {
+      if (level.value >= ALIEN_FIRE_MIN_LEVEL) {
+        fireAlienShot()
+      }
+      scheduleAlienFire()
+    }, delay)
   }
 
   // Fires along the direction the ship is currently facing - used for keyboard shooting,
@@ -434,11 +601,41 @@ export default function useSpaceGame () {
     fireAt(shipX, shipY, radians)
   }
 
+  // Jumps straight to the given level for testing, without needing to grind up to it -
+  // resets the UFO to full health at the new level's difficulty and relocates it
+  // immediately so the change is felt right away.
+  const applyCheatLevel = (targetLevel) => {
+    level.value = Math.max(1, Math.floor(targetLevel))
+    ufoHealth.value = UFO_MAX_HEALTH
+    ufoDestroyed.value = false
+    ufoVisible.value = true
+    clearTimeout(respawnTimeoutId)
+    randomizePosition()
+  }
+
   const onKeyDown = (event) => {
     if (event.code === 'Space' || event.key === ' ') {
       event.preventDefault()
       dismissHint()
       fireForward()
+      return
+    }
+
+    if (event.key === 'Enter') {
+      const match = cheatBuffer.match(CHEAT_LEVEL_PATTERN)
+      if (match) applyCheatLevel(Number(match[1]))
+      cheatBuffer = ''
+      return
+    }
+
+    // Accumulate single printable characters only (letters/digits/etc.), ignoring
+    // named keys like "Shift" or "Backspace" - resets after a pause so stray typing
+    // elsewhere on the page can't linger into a later, unintended match.
+    if (event.key && event.key.length === 1) {
+      const now = performance.now()
+      if (now - lastCheatKeyTime > CHEAT_BUFFER_TIMEOUT) cheatBuffer = ''
+      lastCheatKeyTime = now
+      cheatBuffer = (cheatBuffer + event.key).slice(-24)
     }
   }
 
@@ -510,8 +707,10 @@ export default function useSpaceGame () {
     ufoPos.left = ufoX + 'px'
     ufoPos.top = ufoY + 'px'
 
-    // Advance in-flight projectiles and check each against the UFO's live position.
+    // Advance in-flight projectiles and check each against the right target's live
+    // position - player shots aim at the UFO, the UFO's own return fire aims at the ship.
     const ufoHitCircle = getUfoHitCircle()
+    const shipHitCircle = getShipHitCircle()
     for (const projectile of projectiles) {
       if (projectile.state !== 'flying') continue
 
@@ -521,16 +720,36 @@ export default function useSpaceGame () {
       projectile.y += stepY
       projectile.travelled += Math.hypot(stepX, stepY)
 
-      if (ufoHitCircle) {
-        const hitDistance = Math.hypot(projectile.x - ufoHitCircle.x, projectile.y - ufoHitCircle.y)
-        if (hitDistance <= ufoHitCircle.radius) {
-          registerHit(projectile)
+      const targetCircle = projectile.owner === 'alien' ? shipHitCircle : ufoHitCircle
+      if (targetCircle) {
+        const hitDistance = Math.hypot(projectile.x - targetCircle.x, projectile.y - targetCircle.y)
+        if (hitDistance <= targetCircle.radius) {
+          if (projectile.owner === 'alien') {
+            registerAlienHit(projectile)
+          } else {
+            registerHit(projectile)
+          }
           continue
         }
       }
 
       if (projectile.travelled >= PROJECTILE_MAX_DISTANCE) {
         registerMiss(projectile)
+      }
+    }
+
+    // Let the player shoot down incoming alien fire before it connects - any shot that
+    // resolved above (hit/miss) is already excluded by the state check, so only
+    // still-in-flight shots on both sides are candidates.
+    const flyingAlienShots = projectiles.filter(p => p.owner === 'alien' && p.state === 'flying')
+    if (flyingAlienShots.length) {
+      const flyingPlayerShots = projectiles.filter(p => p.owner !== 'alien' && p.state === 'flying')
+      for (const alienShot of flyingAlienShots) {
+        const playerShot = flyingPlayerShots.find(p =>
+          p.state === 'flying' &&
+          Math.hypot(p.x - alienShot.x, p.y - alienShot.y) <= PROJECTILE_INTERCEPT_RADIUS
+        )
+        if (playerShot) registerIntercept(alienShot, playerShot)
       }
     }
 
@@ -549,6 +768,7 @@ export default function useSpaceGame () {
   }
 
   rafId = requestAnimationFrame(tick)
+  scheduleAlienFire()
 
   const scheduleUfoMovement = () => {
     animationTimeoutId = setTimeout(() => {
@@ -564,6 +784,8 @@ export default function useSpaceGame () {
     clearTimeout(warpSettleTimeoutId)
     clearTimeout(ufoDestroyedTimeoutId)
     clearTimeout(respawnTimeoutId)
+    clearTimeout(shipHitTimeoutId)
+    clearTimeout(alienFireTimeoutId)
     if (rafId) cancelAnimationFrame(rafId)
   })
 
@@ -574,6 +796,7 @@ export default function useSpaceGame () {
     score,
     bestScore,
     hit,
+    shipHit,
     scorePulse,
     hintVisible,
     muted,

@@ -1,5 +1,5 @@
 <template>
-  <div class="weapon-bolt" :class="`weapon-bolt--${state}`" :style="style"></div>
+  <div class="weapon-bolt" :class="[`weapon-bolt--${state}`, `weapon-bolt--${owner}`]" :style="style"></div>
 </template>
 
 <script>
@@ -11,6 +11,7 @@ export default {
     x: { type: Number, required: true },
     y: { type: Number, required: true },
     state: { type: String, default: 'flying' },
+    owner: { type: String, default: 'player' },
   },
   setup (props) {
     const style = computed(() => ({
@@ -47,5 +48,22 @@ export default {
 .weapon-bolt--miss {
   opacity: 0;
   transition-duration: 0.15s;
+}
+
+.weapon-bolt--alien {
+  background: #86efac;
+  box-shadow: 0 0 6px 2px rgba(134, 239, 172, 0.9), 0 0 12px 4px rgba(74, 222, 128, 0.6);
+}
+
+.weapon-bolt--alien.weapon-bolt--hit {
+  background: #4ade80;
+  box-shadow: 0 0 10px 4px rgba(74, 222, 128, 0.9), 0 0 20px 8px rgba(34, 197, 94, 0.6);
+}
+
+.weapon-bolt--intercepted {
+  background: #e5e7eb;
+  box-shadow: 0 0 10px 4px rgba(229, 231, 235, 0.9), 0 0 18px 8px rgba(156, 163, 175, 0.6);
+  transform: scale(1.8);
+  opacity: 0;
 }
 </style>

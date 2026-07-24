@@ -19,8 +19,8 @@
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
-      <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
-      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state"/>
+      <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
+      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner"/>
 
       <SvgUFO
           v-show="ufoVisible"
@@ -82,6 +82,7 @@ export default {
       score,
       bestScore,
       hit,
+      shipHit,
       scorePulse,
       hintVisible,
       muted,
@@ -148,6 +149,7 @@ export default {
       projectiles,
       warpFlashes,
       hit,
+      shipHit,
       scorePulse,
       hintVisible,
       container,
@@ -227,6 +229,13 @@ export default {
 <style scoped>
 .ship {
   background: transparent;
+  /* Declared on the base class (not just .ship-hit) so the filter transitions smoothly
+     both into and back out of the hit flash, rather than just snapping back instantly. */
+  transition: filter 0.15s ease-out;
+}
+
+.ship-hit {
+  filter: brightness(1.8) drop-shadow(0 0 10px #4ade80) drop-shadow(0 0 20px #22c55e);
 }
 
 @keyframes move-twink-back {
