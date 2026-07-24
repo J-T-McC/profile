@@ -5,16 +5,18 @@
       gradient-to="to-blue-500"
       animation="animate-gradient-xy">
   </section-break>
-  <div id="about" class="relative" ref="container">
+  <div id="about" class="relative" ref="container" :class="{'select-none': mode.isDarkMode.value && !isMobileOnly}">
     <div
         class="hidden lg:block h-full w-full absolute top-0 left-0"
         v-if="mode.isDarkMode.value && !isMobileOnly"
-        @mousemove="rotateShip" @click="moveShip" @keydown="fire">
-      <div v-if="score" class="gamify absolute top-2 left-2 z-10 text-white text-xl">SCORE: {{ score }}</div>
+        tabindex="0"
+        @mousemove="rotateShip" @click="moveShip" @keydown="onKeyDown">
+      <div v-if="score || bestScore" class="gamify absolute top-2 left-2 z-10 text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }}</span></div>
+      <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
-      <SvgWeapon v-for="(weaponHit, index) in fired" :key="index" v-bind="{...weaponHit}"/>
+      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state"/>
 
       <SvgUFO
           ref="ufo"
@@ -49,8 +51,8 @@
 import CardRow from '@/components/reusable/CardRow'
 import SectionBreak from '@/components/reusable/SectionBreak'
 import useDarkMode from '@/hooks/useDarkMode'
+import useSpaceGame from '@/hooks/useSpaceGame'
 import SvgUFO from '@/components/icons/SvgUFO'
-import { ref, reactive } from 'vue'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
 
@@ -64,106 +66,29 @@ export default {
   },
   setup () {
     const mode = useDarkMode()
-    const container = ref(null)
-    const score = ref(0)
-    const ufo = ref(null)
-    const ship = ref(null)
-    const hit = ref(false)
 
-    const fired = reactive([])
-
-    const ufoClicked = (event) => {
-      score.value++
-      hit.value = true
-      fire(event)
-      setTimeout(() => {
-        hit.value = false
-      }, 1000)
-    }
-
-    const ufoPos = ref({
-      top: '-1000px',
-    })
-    const shipPos = reactive({
-      top: '0px',
-      left: '0px',
-    })
-
-    const randomizePosition = () => {
-      const duration = Math.ceil(Math.random() * 3) + 's'
-      const offset = Math.random() < 0.5 ? -100 : 100
-
-      const maxSize = 75
-      const size = Math.ceil(Math.random() * maxSize)
-      let brightness = (size / maxSize) * 100
-      brightness = brightness < 40 ? 40 : brightness
-
-      const zIndexThreshold = 0.8
-
-      const sizeStyles = {
-        height: `${size}px`,
-        width: `${size}px`,
-        'z-index': size >= (maxSize * zIndexThreshold) ? 12 : 1,
-        filter: `brightness(${brightness}%)`,
-      }
-
-      ufoPos.value = {
-        top: (Math.random() * container.value?.offsetHeight + offset ?? -1000) + 'px',
-        left: (Math.random() * container.value?.offsetWidth + offset ?? -1000) + 'px',
-        'animation-duration': duration,
-        'transition-duration': duration,
-        ...sizeStyles
-      }
-    }
-
-    const rotateShip = (event) => {
-      const containerOffset = container.value.getBoundingClientRect()
-
-      const pointerBox = ship.value.getBoundingClientRect(),
-          centerY = pointerBox.top + ship.value.offsetHeight - containerOffset.top,
-          centerX = pointerBox.left + ship.value.offsetWidth - containerOffset.left
-
-      const radians = Math.atan2(event.x - centerX, (event.y - containerOffset.top) - centerY)
-      const degree = (radians * (180 / Math.PI) * -1) + 180
-
-      shipPos.transform = `rotate(${degree}deg)`
-      shipPos['transition-duration'] = `0.1s`
-    }
-
-    const fire = (event) => {
-      const containerOffset = container.value.getBoundingClientRect()
-      fired.push({
-        startX: shipPos.left,
-        startY: shipPos.top,
-        endX: event.x + 'px',
-        endY: event.y - containerOffset.top + 'px',
-      })
-
-      setTimeout(() => {
-        fired.shift()
-      }, 200)
-    }
-
-    const moveShip = (event) => {
-      if (ufo.value.$el === event.target) {
-        fire(event)
-      } else {
-        const containerOffset = container.value.getBoundingClientRect()
-        shipPos['transition-duration'] = '1s'
-        shipPos.left = event.x + 'px'
-        shipPos.top = event.y - containerOffset.top + 'px'
-      }
-    }
-
-    const setAnimationTimeout = () => {
-      setTimeout(() => {
-        randomizePosition()
-        setAnimationTimeout()
-      }, Math.ceil(Math.random() * 10000))
-    }
+    const {
+      container,
+      ship,
+      ufo,
+      score,
+      bestScore,
+      hit,
+      scorePulse,
+      hintVisible,
+      projectiles,
+      shipPos,
+      ufoPos,
+      randomizePosition,
+      rotateShip,
+      moveShip,
+      onKeyDown,
+      ufoClicked,
+      scheduleUfoMovement,
+    } = useSpaceGame()
 
     if (!isMobileOnly) {
-      setAnimationTimeout()
+      scheduleUfoMovement()
     }
 
     return {
@@ -171,13 +96,16 @@ export default {
       ufoClicked,
       rotateShip,
       moveShip,
-      fire,
+      onKeyDown,
       shipPos,
       ship,
       ufo,
       score,
-      fired,
+      bestScore,
+      projectiles,
       hit,
+      scorePulse,
+      hintVisible,
       container,
       ufoPos,
       mode,
@@ -278,6 +206,10 @@ export default {
   to {
     transform: scale3d(1, 1, 1);
   }
+}
+
+.score-pulse {
+  animation: pulse 0.3s ease-in-out;
 }
 
 .stars {
