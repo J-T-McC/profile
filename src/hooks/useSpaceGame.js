@@ -62,6 +62,14 @@ const POWERUP_COLLECT_PADDING = 16   // px of extra forgiveness added to the shi
 const POWERUP_COLLECT_ANIM_DURATION = 300 // ms pop animation before a collected pickup disappears
 const LASER_SPEED_MULTIPLIER = 1.5   // laser buff: shots fly faster...
 const LASER_HIT_PADDING_BONUS = 8    // ...and are a bit more forgiving to land
+const LASER_HOMING_TURN_RATE = 4     // rad/s - gently heat-seeks toward the UFO (higher = tighter tracking)
+const LASER_DAMAGE = 2               // laser shots deal double the normal 1 damage per hit
+
+// A subtle aim-assist on ordinary shots - they only start nudging toward the UFO once
+// they're already within REGULAR_HOMING_RADIUS of it, and much more weakly than the laser,
+// so a slightly-off angle at higher levels still connects without every shot auto-hitting.
+const REGULAR_HOMING_TURN_RATE = 2   // rad/s - weaker than the laser's tracking
+const REGULAR_HOMING_RADIUS = 80     // px from the UFO's centre before the nudge kicks in
 
 const POWERUP_TYPES = {
   rapid2: { minLevel: 4, label: '2×', color: '#38bdf8', fireRateMultiplier: 2 },
@@ -95,6 +103,20 @@ export default function useSpaceGame () {
   let lastCheatKeyTime = 0
   const CHEAT_BUFFER_TIMEOUT = 3000 // ms - stale buffer resets after a pause
   const CHEAT_LEVEL_PATTERN = /level\s*(\d+)$/i
+
+  // Dev/testing cheat - type one of these then Enter to instantly grant that weapon buff
+  // (regardless of level), since some (e.g. laser) only spawn rarely at high levels. The
+  // "2x/3x/4x" aliases are just friendlier to type than the internal rapidN ids.
+  const BUFF_CHEAT_CODES = {
+    laser: 'laser',
+    double: 'double',
+    rapid2: 'rapid2',
+    rapid3: 'rapid3',
+    rapid4: 'rapid4',
+    '2x': 'rapid2',
+    '3x': 'rapid3',
+    '4x': 'rapid4',
+  }
 
   const ufoHealthRatio = computed(() => ufoHealth.value / UFO_MAX_HEALTH)
   const ufoHealthColor = computed(() => {
@@ -497,7 +519,7 @@ export default function useSpaceGame () {
     score.value++
     scorePulse.value = true
 
-    ufoHealth.value = Math.max(0, ufoHealth.value - 1)
+    ufoHealth.value = Math.max(0, ufoHealth.value - (projectile.damage || 1))
 
     if (ufoHealth.value === 0) {
       // Destroyed - bigger flash/sound, level up (harder reaction time from here on),
@@ -628,6 +650,7 @@ export default function useSpaceGame () {
         state: 'flying',
         hitPaddingBonus,
         laser: isLaser,
+        damage: isLaser ? LASER_DAMAGE : 1,
       })
     }
 
@@ -720,14 +743,23 @@ export default function useSpaceGame () {
     }, delay)
   }
 
-  // Flying into a power-up immediately grants its buff, replacing/refreshing whatever
-  // (if anything) was already active - only one weapon buff is active at a time.
-  const collectPowerUp = (powerUp, time) => {
-    powerUp.state = 'collected'
-    activeBuffType.value = powerUp.type
-    buffExpiresAt = time + POWERUP_BUFF_DURATION
+  // Activates (or refreshes) a weapon buff by type id - only one is ever active at a
+  // time, so this replaces whatever was there. buffExpiresAt is on the same clock as the
+  // tick loop's `time` (both DOMHighResTimeStamp), so performance.now() is interchangeable
+  // whether this is triggered from a pickup mid-frame or a keydown cheat.
+  const activateBuff = (typeId) => {
+    if (!POWERUP_TYPES[typeId]) return
+    activeBuffType.value = typeId
+    buffExpiresAt = performance.now() + POWERUP_BUFF_DURATION
     buffRemainingMs.value = POWERUP_BUFF_DURATION
     playPowerUpSound()
+  }
+
+  // Flying into a power-up immediately grants its buff, replacing/refreshing whatever
+  // (if anything) was already active - only one weapon buff is active at a time.
+  const collectPowerUp = (powerUp) => {
+    powerUp.state = 'collected'
+    activateBuff(powerUp.type)
 
     setTimeout(() => {
       const index = powerUps.indexOf(powerUp)
@@ -769,8 +801,13 @@ export default function useSpaceGame () {
     }
 
     if (event.key === 'Enter') {
-      const match = cheatBuffer.match(CHEAT_LEVEL_PATTERN)
-      if (match) applyCheatLevel(Number(match[1]))
+      const levelMatch = cheatBuffer.match(CHEAT_LEVEL_PATTERN)
+      if (levelMatch) {
+        applyCheatLevel(Number(levelMatch[1]))
+      } else {
+        const buffCode = Object.keys(BUFF_CHEAT_CODES).find(code => cheatBuffer.toLowerCase().endsWith(code))
+        if (buffCode) activateBuff(BUFF_CHEAT_CODES[buffCode])
+      }
       cheatBuffer = ''
       return
     }
@@ -861,6 +898,32 @@ export default function useSpaceGame () {
     for (const projectile of projectiles) {
       if (projectile.state !== 'flying') continue
 
+      // Player shots nudge their heading toward the UFO each frame (turn rate capped so
+      // they curve rather than snap), keeping speed constant. Lasers heat-seek from
+      // anywhere; ordinary shots get a weaker nudge, and only once they're already near
+      // the UFO - a forgiving aim-assist rather than full tracking. Only while a UFO is live.
+      if (projectile.owner === 'player' && ufoHitCircle && ufoVisible.value) {
+        let turnRate = 0
+        if (projectile.laser) {
+          turnRate = LASER_HOMING_TURN_RATE
+        } else {
+          const distToUfo = Math.hypot(ufoHitCircle.x - projectile.x, ufoHitCircle.y - projectile.y)
+          if (distToUfo <= REGULAR_HOMING_RADIUS) turnRate = REGULAR_HOMING_TURN_RATE
+        }
+
+        if (turnRate > 0) {
+          const speed = Math.hypot(projectile.vx, projectile.vy)
+          const heading = Math.atan2(projectile.vx, projectile.vy)
+          const desired = Math.atan2(ufoHitCircle.x - projectile.x, ufoHitCircle.y - projectile.y)
+          // Shortest signed angle from heading to desired, wrapped to [-PI, PI].
+          const diff = Math.atan2(Math.sin(desired - heading), Math.cos(desired - heading))
+          const maxTurn = turnRate * dt
+          const newHeading = heading + clamp(diff, -maxTurn, maxTurn)
+          projectile.vx = Math.sin(newHeading) * speed
+          projectile.vy = Math.cos(newHeading) * speed
+        }
+      }
+
       const stepX = projectile.vx * dt
       const stepY = projectile.vy * dt
       projectile.x += stepX
@@ -921,7 +984,7 @@ export default function useSpaceGame () {
         if (shipHitCircle) {
           const pickupDistance = Math.hypot(powerUp.x - shipHitCircle.x, powerUp.y - shipHitCircle.y)
           if (pickupDistance <= shipHitCircle.radius + POWERUP_COLLECT_PADDING) {
-            collectPowerUp(powerUp, time)
+            collectPowerUp(powerUp)
           }
         }
       }
