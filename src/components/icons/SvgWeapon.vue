@@ -1,5 +1,5 @@
 <template>
-  <div class="weapon-bolt" :class="[`weapon-bolt--${state}`, `weapon-bolt--${owner}`]" :style="style"></div>
+  <div class="weapon-bolt" :class="[`weapon-bolt--${state}`, `weapon-bolt--${owner}`, {'weapon-bolt--laser': laser}]" :style="style"></div>
 </template>
 
 <script>
@@ -12,6 +12,7 @@ export default {
     y: { type: Number, required: true },
     state: { type: String, default: 'flying' },
     owner: { type: String, default: 'player' },
+    laser: { type: Boolean, default: false },
   },
   setup (props) {
     const style = computed(() => ({
@@ -58,6 +59,16 @@ export default {
 .weapon-bolt--alien.weapon-bolt--hit {
   background: #4ade80;
   box-shadow: 0 0 10px 4px rgba(74, 222, 128, 0.9), 0 0 20px 8px rgba(34, 197, 94, 0.6);
+}
+
+/* Laser buff: a bigger, brighter, cyan-white bolt so charged shots read as
+   noticeably stronger than the default red ones. Combined selector so the hit/miss
+   state variants above still override it regardless of source order. */
+.weapon-bolt--laser {
+  width: 16px;
+  height: 16px;
+  background: #ecfeff;
+  box-shadow: 0 0 8px 3px rgba(103, 232, 249, 0.95), 0 0 16px 6px rgba(34, 211, 238, 0.7);
 }
 
 .weapon-bolt--intercepted {

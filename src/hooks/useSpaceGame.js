@@ -47,6 +47,30 @@ const ALIEN_PROJECTILE_SPEED = 650      // px/s - a bit slower than the player's
 const ALIEN_HEAL_AMOUNT = 1             // HP restored to the UFO per successful hit
 const SHIP_HIT_FLASH_DURATION = 400     // ms - brief flash on the ship when an alien shot connects
 
+// Floating weapon power-ups, starting at level 4 - fly the ship into one to pick it up.
+// Weaker/simpler ones are available first, stronger ones only unlock at higher levels, so
+// what's on offer ramps up gradually rather than throwing everything in at once.
+const POWERUP_MIN_LEVEL = 4
+const POWERUP_BUFF_DURATION = 10000  // ms the collected buff stays active - a placeholder for now
+const POWERUP_LIFESPAN = 12000       // ms a spawned pickup floats around before vanishing uncollected
+const POWERUP_SPAWN_INTERVAL_MIN = 14000
+const POWERUP_SPAWN_INTERVAL_MAX = 24000
+const POWERUP_DRIFT_SPEED = 70       // px/s, horizontal drift across the screen
+const POWERUP_BOB_AMPLITUDE = 10     // px of vertical bobbing while it floats
+const POWERUP_BOB_FREQUENCY = 0.6    // bobs per second
+const POWERUP_COLLECT_PADDING = 16   // px of extra forgiveness added to the ship's radius for pickup
+const POWERUP_COLLECT_ANIM_DURATION = 300 // ms pop animation before a collected pickup disappears
+const LASER_SPEED_MULTIPLIER = 1.5   // laser buff: shots fly faster...
+const LASER_HIT_PADDING_BONUS = 8    // ...and are a bit more forgiving to land
+
+const POWERUP_TYPES = {
+  rapid2: { minLevel: 4, label: '2×', color: '#38bdf8', fireRateMultiplier: 2 },
+  rapid3: { minLevel: 5, label: '3×', color: '#818cf8', fireRateMultiplier: 3 },
+  double: { minLevel: 5, label: '2•', color: '#facc15', doubleShot: true },
+  rapid4: { minLevel: 7, label: '4×', color: '#f472b6', fireRateMultiplier: 4 },
+  laser: { minLevel: 8, label: 'L', color: '#34d399', laser: true },
+}
+
 export default function useSpaceGame () {
   const container = ref(null)
   const ship = ref(null)
@@ -94,6 +118,18 @@ export default function useSpaceGame () {
   const warpFlashes = reactive([])
   let nextWarpFlashId = 0
   let warpSettleTimeoutId = null
+
+  const powerUps = reactive([])
+  let nextPowerUpId = 0
+  let powerUpSpawnTimeoutId = null
+
+  const activeBuffType = ref(null)
+  const buffRemainingMs = ref(0)
+  let buffExpiresAt = 0
+
+  const activeBuffLabel = computed(() => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value].label : null)
+  const activeBuffColor = computed(() => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value].color : null)
+  const activeBuffSecondsRemaining = computed(() => Math.ceil(buffRemainingMs.value / 1000))
 
   const shipAngle = ref(0)
   let hasFacing = false
@@ -170,6 +206,11 @@ export default function useSpaceGame () {
   // counting from level 3, not level 1.
   const getAlienFireProgress = () => clamp((level.value - ALIEN_FIRE_MIN_LEVEL) / (LEVEL_DIFFICULTY_CAP - ALIEN_FIRE_MIN_LEVEL), 0, 1)
   const getAlienFireCooldown = () => ALIEN_FIRE_COOLDOWN_START - getAlienFireProgress() * (ALIEN_FIRE_COOLDOWN_START - ALIEN_FIRE_COOLDOWN_MIN)
+
+  // Which power-up types are allowed to spawn at the current level - grows as level
+  // increases, so stronger buffs only start showing up once you've levelled up enough.
+  const getAvailablePowerUpTypeIds = () => Object.keys(POWERUP_TYPES).filter(id => level.value >= POWERUP_TYPES[id].minLevel)
+  const getActiveBuff = () => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value] : null
 
   // --- Sound (synthesized via Web Audio - no external audio files) -------------------
 
@@ -295,6 +336,26 @@ export default function useSpaceGame () {
     osc.connect(gain).connect(ctx.destination)
     osc.start()
     osc.stop(ctx.currentTime + 0.1)
+  }
+
+  // A bright ascending three-note arpeggio for picking up a weapon power-up.
+  const playPowerUpSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const notes = [523.25, 659.25, 783.99] // C5, E5, G5
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'square'
+      const startTime = ctx.currentTime + i * 0.06
+      osc.frequency.setValueAtTime(freq, startTime)
+      gain.gain.setValueAtTime(0.001, startTime)
+      gain.gain.exponentialRampToValueAtTime(0.09, startTime + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.15)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(startTime)
+      osc.stop(startTime + 0.16)
+    })
   }
 
   const randomizePosition = () => {
@@ -532,26 +593,51 @@ export default function useSpaceGame () {
     }, HIT_ANIM_DURATION)
   }
 
-  const canFire = () => (performance.now() - lastFireTime) >= FIRE_COOLDOWN
+  // A "rapid fire" buff shortens the cooldown by its multiplier; no active buff (or a
+  // non-rate buff like double/laser) leaves it at the base rate.
+  const canFire = () => {
+    const multiplier = getActiveBuff()?.fireRateMultiplier ?? 1
+    return (performance.now() - lastFireTime) >= (FIRE_COOLDOWN / multiplier)
+  }
 
   // Spawns a real projectile travelling in a straight line from (originX, originY) along
   // directionRadians; a hit is only registered once its flight path comes within the
-  // UFO's live hit circle (see tick()), rather than instantly on click.
+  // UFO's live hit circle (see tick()), rather than instantly on click. Applies whatever
+  // weapon buff is currently active: double-shot fires a pair spread slightly apart, and
+  // laser makes the shot(s) faster and a bit more forgiving to land.
   const fireAt = (originX, originY, directionRadians) => {
     if (!canFire()) return
     lastFireTime = performance.now()
     playLaserSound()
 
-    projectiles.push({
-      id: nextProjectileId++,
-      owner: 'player',
-      x: originX,
-      y: originY,
-      vx: Math.sin(directionRadians) * PROJECTILE_SPEED,
-      vy: Math.cos(directionRadians) * PROJECTILE_SPEED,
-      travelled: 0,
-      state: 'flying',
-    })
+    const buff = getActiveBuff()
+    const isLaser = !!buff?.laser
+    const speed = isLaser ? PROJECTILE_SPEED * LASER_SPEED_MULTIPLIER : PROJECTILE_SPEED
+    const hitPaddingBonus = isLaser ? LASER_HIT_PADDING_BONUS : 0
+
+    const spawnShot = (angleOffset) => {
+      const radians = directionRadians + angleOffset
+      projectiles.push({
+        id: nextProjectileId++,
+        owner: 'player',
+        x: originX,
+        y: originY,
+        vx: Math.sin(radians) * speed,
+        vy: Math.cos(radians) * speed,
+        travelled: 0,
+        state: 'flying',
+        hitPaddingBonus,
+        laser: isLaser,
+      })
+    }
+
+    if (buff?.doubleShot) {
+      const spread = 0.12 // radians, roughly ±3.4 degrees off the aimed direction
+      spawnShot(-spread / 2)
+      spawnShot(spread / 2)
+    } else {
+      spawnShot(0)
+    }
   }
 
   // The UFO's own return shot, unlocked at ALIEN_FIRE_MIN_LEVEL - aims directly at the
@@ -586,6 +672,67 @@ export default function useSpaceGame () {
       }
       scheduleAlienFire()
     }, delay)
+  }
+
+  // Drifts a weapon power-up in from one side of the screen - removed automatically
+  // after POWERUP_LIFESPAN if the player never flies into it.
+  const spawnPowerUp = () => {
+    if (!container.value) return
+    const availableIds = getAvailablePowerUpTypeIds()
+    if (!availableIds.length) return
+
+    const type = availableIds[Math.floor(Math.random() * availableIds.length)]
+    const containerWidth = container.value.offsetWidth
+    const containerHeight = container.value.offsetHeight
+    const fromLeft = Math.random() < 0.5
+    const id = nextPowerUpId++
+
+    powerUps.push({
+      id,
+      type,
+      label: POWERUP_TYPES[type].label,
+      color: POWERUP_TYPES[type].color,
+      x: fromLeft ? -30 : containerWidth + 30,
+      baseY: Math.random() * Math.max(containerHeight - 40, 40) + 20,
+      y: 0,
+      vx: (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED,
+      spawnTime: null,
+      state: 'floating',
+    })
+
+    setTimeout(() => {
+      const index = powerUps.findIndex(p => p.id === id)
+      if (index !== -1 && powerUps[index].state === 'floating') {
+        powerUps.splice(index, 1)
+      }
+    }, POWERUP_LIFESPAN)
+  }
+
+  // Keeps rescheduling regardless of level - only actually spawns once level reaches
+  // POWERUP_MIN_LEVEL, same self-starting pattern as scheduleAlienFire().
+  const schedulePowerUpSpawn = () => {
+    const delay = POWERUP_SPAWN_INTERVAL_MIN + Math.random() * (POWERUP_SPAWN_INTERVAL_MAX - POWERUP_SPAWN_INTERVAL_MIN)
+    powerUpSpawnTimeoutId = setTimeout(() => {
+      if (level.value >= POWERUP_MIN_LEVEL) {
+        spawnPowerUp()
+      }
+      schedulePowerUpSpawn()
+    }, delay)
+  }
+
+  // Flying into a power-up immediately grants its buff, replacing/refreshing whatever
+  // (if anything) was already active - only one weapon buff is active at a time.
+  const collectPowerUp = (powerUp, time) => {
+    powerUp.state = 'collected'
+    activeBuffType.value = powerUp.type
+    buffExpiresAt = time + POWERUP_BUFF_DURATION
+    buffRemainingMs.value = POWERUP_BUFF_DURATION
+    playPowerUpSound()
+
+    setTimeout(() => {
+      const index = powerUps.indexOf(powerUp)
+      if (index !== -1) powerUps.splice(index, 1)
+    }, POWERUP_COLLECT_ANIM_DURATION)
   }
 
   // Fires along the direction the ship is currently facing - used for keyboard shooting,
@@ -722,8 +869,9 @@ export default function useSpaceGame () {
 
       const targetCircle = projectile.owner === 'alien' ? shipHitCircle : ufoHitCircle
       if (targetCircle) {
+        const effectiveRadius = targetCircle.radius + (projectile.hitPaddingBonus || 0)
         const hitDistance = Math.hypot(projectile.x - targetCircle.x, projectile.y - targetCircle.y)
-        if (hitDistance <= targetCircle.radius) {
+        if (hitDistance <= effectiveRadius) {
           if (projectile.owner === 'alien') {
             registerAlienHit(projectile)
           } else {
@@ -753,6 +901,40 @@ export default function useSpaceGame () {
       }
     }
 
+    // Drift/bob floating power-ups, remove any that exit the screen, and check for the
+    // ship flying into one. Iterated backwards so splicing mid-loop is safe.
+    if (powerUps.length && container.value) {
+      const containerWidth = container.value.offsetWidth
+      for (let i = powerUps.length - 1; i >= 0; i--) {
+        const powerUp = powerUps[i]
+        if (powerUp.state !== 'floating') continue
+
+        if (powerUp.spawnTime === null) powerUp.spawnTime = time
+        powerUp.x += powerUp.vx * dt
+        powerUp.y = powerUp.baseY + Math.sin((time - powerUp.spawnTime) / 1000 * POWERUP_BOB_FREQUENCY * Math.PI * 2) * POWERUP_BOB_AMPLITUDE
+
+        if (powerUp.x < -60 || powerUp.x > containerWidth + 60) {
+          powerUps.splice(i, 1)
+          continue
+        }
+
+        if (shipHitCircle) {
+          const pickupDistance = Math.hypot(powerUp.x - shipHitCircle.x, powerUp.y - shipHitCircle.y)
+          if (pickupDistance <= shipHitCircle.radius + POWERUP_COLLECT_PADDING) {
+            collectPowerUp(powerUp, time)
+          }
+        }
+      }
+    }
+
+    // Expire the active weapon buff once its time is up.
+    if (activeBuffType.value) {
+      buffRemainingMs.value = Math.max(0, buffExpiresAt - time)
+      if (buffRemainingMs.value <= 0) {
+        activeBuffType.value = null
+      }
+    }
+
     // Smarter UFO AI: keep evading for as long as the cursor lingers nearby, instead of
     // only reacting once on mouseenter. Rate-limited so it doesn't teleport every frame -
     // both the cooldown and detection radius scale with level (its "reaction time").
@@ -769,6 +951,7 @@ export default function useSpaceGame () {
 
   rafId = requestAnimationFrame(tick)
   scheduleAlienFire()
+  schedulePowerUpSpawn()
 
   const scheduleUfoMovement = () => {
     animationTimeoutId = setTimeout(() => {
@@ -786,6 +969,7 @@ export default function useSpaceGame () {
     clearTimeout(respawnTimeoutId)
     clearTimeout(shipHitTimeoutId)
     clearTimeout(alienFireTimeoutId)
+    clearTimeout(powerUpSpawnTimeoutId)
     if (rafId) cancelAnimationFrame(rafId)
   })
 
@@ -809,6 +993,12 @@ export default function useSpaceGame () {
     ufoVisible,
     projectiles,
     warpFlashes,
+    powerUps,
+    activeBuffType,
+    activeBuffLabel,
+    activeBuffColor,
+    activeBuffSecondsRemaining,
+    buffRemainingMs,
     shipPos,
     ufoPos,
     randomizePosition,

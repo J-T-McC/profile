@@ -14,13 +14,23 @@
       <div class="absolute top-2 left-2 z-10 flex items-center gap-2">
         <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
         <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
+        <div v-if="activeBuffType" class="buff-badge gamify text-sm" :style="{color: activeBuffColor, borderColor: activeBuffColor}">{{ activeBuffLabel }} <span class="opacity-70">{{ activeBuffSecondsRemaining }}s</span></div>
       </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
       <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
-      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner"/>
+      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser"/>
+
+      <div
+          v-for="powerUp in powerUps"
+          :key="powerUp.id"
+          class="power-up gamify"
+          :class="{'power-up--collected': powerUp.state === 'collected'}"
+          :style="{top: powerUp.y + 'px', left: powerUp.x + 'px', color: powerUp.color, borderColor: powerUp.color, boxShadow: '0 0 10px 2px ' + powerUp.color}">
+        {{ powerUp.label }}
+      </div>
 
       <SvgUFO
           v-show="ufoVisible"
@@ -94,6 +104,11 @@ export default {
       ufoVisible,
       projectiles,
       warpFlashes,
+      powerUps,
+      activeBuffType,
+      activeBuffLabel,
+      activeBuffColor,
+      activeBuffSecondsRemaining,
       shipPos,
       ufoPos,
       rotateShip,
@@ -148,6 +163,11 @@ export default {
       ufoVisible,
       projectiles,
       warpFlashes,
+      powerUps,
+      activeBuffType,
+      activeBuffLabel,
+      activeBuffColor,
+      activeBuffSecondsRemaining,
       hit,
       shipHit,
       scorePulse,
@@ -327,6 +347,52 @@ export default {
   100% {
     transform: scale(1);
   }
+}
+
+.power-up {
+  position: absolute;
+  z-index: 19;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px;
+  border: 2px solid currentColor;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.55);
+  font-size: 15px;
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: power-up-idle 1.6s ease-in-out infinite;
+}
+
+@keyframes power-up-idle {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.12);
+  }
+}
+
+.power-up--collected {
+  animation: none;
+  transition: transform 0.3s ease-out, opacity 0.3s ease-out;
+  transform: translate(-50%, -50%) scale(2.2);
+  opacity: 0;
+}
+
+.buff-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.4);
+  line-height: 1;
 }
 
 .stars {
