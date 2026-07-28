@@ -43,8 +43,11 @@ const UFO_SPEED_MULTIPLIER_MAX = 1.6    // dodge speed ceiling at high levels
 // deliberately modest at both ends - once multiple UFOs are in play at once, the combined
 // fire rate will climb on its own without any single one needing to be this aggressive.
 const ALIEN_FIRE_MIN_LEVEL = 3
-const ALIEN_FIRE_COOLDOWN_START = 10000 // ms - quite infrequent right when it unlocks
-const ALIEN_FIRE_COOLDOWN_MIN = 3000    // ms - still just once every few seconds at max difficulty
+const ALIEN_FIRE_LEVEL_CAP = 25         // level at which a single enemy's fire rate maxes out - much
+                                        // higher than LEVEL_DIFFICULTY_CAP so per-enemy fire ramps up
+                                        // slowly (extra enemies every 10 levels already add pressure)
+const ALIEN_FIRE_COOLDOWN_START = 12000 // ms - quite infrequent right when it unlocks
+const ALIEN_FIRE_COOLDOWN_MIN = 4500    // ms - still only every several seconds even at max difficulty
 const ALIEN_PROJECTILE_SPEED = 650      // px/s - a bit slower than the player's shots, so it's dodgeable
 const ALIEN_HEAL_AMOUNT = 1             // HP restored to the UFO per successful hit
 const SHIP_HIT_FLASH_DURATION = 400     // ms - brief flash on the ship when an alien shot connects
@@ -53,7 +56,9 @@ const SHIP_HIT_FLASH_DURATION = 400     // ms - brief flash on the ship when an 
 // Weaker/simpler ones are available first, stronger ones only unlock at higher levels, so
 // what's on offer ramps up gradually rather than throwing everything in at once.
 const POWERUP_MIN_LEVEL = 4
-const POWERUP_BUFF_DURATION = 10000  // ms the collected buff stays active - a placeholder for now
+const POWERUP_BUFF_DURATION = 10000  // ms a weapon buff lasts at its base (before the level bonus)
+const BUFF_DURATION_PER_LEVEL = 1000 // ms added to a buff/shield's duration per level
+const BUFF_DURATION_MAX = 30000      // ms cap on any single buff/shield's total duration
 const POWERUP_LIFESPAN = 12000       // ms a spawned pickup floats around before vanishing uncollected
 const POWERUP_SPAWN_INTERVAL_MIN = 14000
 const POWERUP_SPAWN_INTERVAL_MAX = 24000
@@ -289,15 +294,19 @@ export default function useSpaceGame () {
   const getUfoSpeedMultiplier = () => UFO_SPEED_MULTIPLIER_START + getLevelProgress() * (UFO_SPEED_MULTIPLIER_MAX - UFO_SPEED_MULTIPLIER_START)
 
   // 0 right when return fire unlocks (ALIEN_FIRE_MIN_LEVEL), ramping to 1 by
-  // LEVEL_DIFFICULTY_CAP - separate curve from getLevelProgress() since it only starts
-  // counting from level 3, not level 1.
-  const getAlienFireProgress = () => clamp((level.value - ALIEN_FIRE_MIN_LEVEL) / (LEVEL_DIFFICULTY_CAP - ALIEN_FIRE_MIN_LEVEL), 0, 1)
+  // ALIEN_FIRE_LEVEL_CAP - its own, much slower curve (separate from getLevelProgress) so a
+  // single enemy's fire rate creeps up gradually rather than maxing out by level 10.
+  const getAlienFireProgress = () => clamp((level.value - ALIEN_FIRE_MIN_LEVEL) / (ALIEN_FIRE_LEVEL_CAP - ALIEN_FIRE_MIN_LEVEL), 0, 1)
   const getAlienFireCooldown = () => ALIEN_FIRE_COOLDOWN_START - getAlienFireProgress() * (ALIEN_FIRE_COOLDOWN_START - ALIEN_FIRE_COOLDOWN_MIN)
 
   // Which power-up types are allowed to spawn at the current level - grows as level
   // increases, so stronger buffs only start showing up once you've levelled up enough.
   const getAvailablePowerUpTypeIds = () => Object.keys(POWERUP_TYPES).filter(id => level.value >= POWERUP_TYPES[id].minLevel)
   const getActiveWeaponBuff = () => activeWeaponBuff.value ? POWERUP_TYPES[activeWeaponBuff.value] : null
+
+  // Buffs and shields last longer the higher your level, from their base duration up to a
+  // capped maximum, so pickups stay relevant as fights get longer.
+  const scaledBuffDuration = (base) => Math.min(base + (level.value - 1) * BUFF_DURATION_PER_LEVEL, BUFF_DURATION_MAX)
 
   // Weighted random pick from the given power-up type ids - lets defensive pickups
   // (health/shield, given a lower weight) show up less often than weapon buffs.
@@ -861,15 +870,17 @@ export default function useSpaceGame () {
 
     if (type.category === POWERUP_CATEGORY.WEAPON) {
       // Weapon buffs are mutually exclusive - a new one replaces/refreshes the last.
+      const duration = scaledBuffDuration(POWERUP_BUFF_DURATION)
       activeWeaponBuff.value = typeId
-      weaponBuffExpiresAt = now + POWERUP_BUFF_DURATION
-      weaponBuffRemainingMs.value = POWERUP_BUFF_DURATION
+      weaponBuffExpiresAt = now + duration
+      weaponBuffRemainingMs.value = duration
       playPowerUpSound()
     } else if (type.category === POWERUP_CATEGORY.SHIELD) {
       // Shield stacks alongside any weapon buff; a new one just refreshes the timer.
+      const duration = scaledBuffDuration(type.duration)
       shieldActive.value = true
-      shieldExpiresAt = now + type.duration
-      shieldRemainingMs.value = type.duration
+      shieldExpiresAt = now + duration
+      shieldRemainingMs.value = duration
       playPowerUpSound()
     } else if (type.category === POWERUP_CATEGORY.HEALTH) {
       // Instant restore, capped at full health.
