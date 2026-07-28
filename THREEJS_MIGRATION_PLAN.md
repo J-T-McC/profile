@@ -159,6 +159,29 @@ flashes. Implement as material/tween effects or a small particle system.
 - Note: highest scope-creep risk — timebox it; "good enough" parity first.
 - **Token estimate: ~90k**
 
+**Status: ✅ DONE (pending visual QA).** Timeboxed to reproducing the effects that
+were *lost* when their DOM was removed; effects that already had parity were left
+alone.
+
+- Reproduced in-canvas (`useThreeStage.js`):
+  - Ship hit flash → green additive glow; ship shield → pulsing cyan aura (both via
+    a shared radial glow texture, tinted; driven by new `hit`/`shielded` fields on
+    `getShipRenderState`).
+  - UFO hit → red tint; UFO destroyed → yellow tint + the `ufo-destroyed-pulse`
+    scale keyframes (per-mesh `destroyStart` timing).
+  - Ally warp-in/out → screen-axis squash-stretch via a nested group (outer = warp
+    scale, inner = heading rotation), matching the old `.ally`/`.ally-body` split.
+  - Phaser beam → zap fade (opacity 0.2→1→0 over 0.22s) tracked per beam.
+  - Power-up collect → scale-to-2.2 + fade over 0.3s.
+- Already had parity, untouched: ship warp squash-stretch (Phase 2), power-up idle
+  bob (Phase 3).
+- **Deliberately kept as DOM** (they still work and sit above the canvas): the
+  `warp-flash` departure burst and the 8-bit `ship-explosion` rings. Re-porting
+  them would be pure churn for no visual gain; revisit only if desired.
+
+Needs a browser to confirm all of the above read right (tints, glows, warp,
+beam fade, collect pop).
+
 ## Phase 5 — Keep-as-DOM overlays & integration cleanup
 **Goal:** Confirm HUD, radar minimap, active-buff badges, lives, and the 8-bit
 arcade continue/game-over modals still render correctly as DOM *over* the canvas.

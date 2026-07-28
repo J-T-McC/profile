@@ -760,6 +760,8 @@ export default function useSpaceGame (isActive) {
     angle: shipAngle.value,
     stretch: shipStretch,
     visible: gameState.value === GAME_STATE.PLAYING && !shipExplosion.active,
+    hit: shipHit.value,
+    shielded: shieldActive.value,
   })
 
   // The core of a hit landing on an enemy - scoring, health/kill/respawn handling and the
