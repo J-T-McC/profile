@@ -91,6 +91,31 @@ player ship, UFOs (with depth-scaling), projectiles.
 - Note: reuse existing PNG/SVG art as textures where possible.
 - **Token estimate: ~90k**
 
+**Status: ✅ DONE (pending visual QA).** All three gameplay-critical entities now
+render in the WebGL canvas; their DOM/CSS counterparts are removed.
+
+- `useThreeStage.js` is now a real renderer: shared unit `PlaneGeometry`, per-entity
+  textured quads, id-keyed reconciliation (`enemyMeshes`/`boltMeshes` Maps) against
+  the reactive state each frame, layering by `renderOrder` (depth test off) to
+  mirror the old CSS z-index stack. Full dispose of meshes/materials/geometry/
+  textures on teardown.
+  - Ship: Cloudinary PNG on a quad + white backing (matches `bg-white`); driven by
+    a new `getShipRenderState()` (position, `rotation.z = -angle`, warp
+    `scale(1/stretch, stretch)`), shown only while `PLAYING && !shipExplosion`.
+  - UFOs: art extracted to `src/assets/ufo.svg` (Vite loads it as a texture);
+    `size` → quad scale, `brightness` → greyscale tint, `zIndex` → renderOrder.
+  - Bolts: procedural radial-glow `CanvasTexture`s (player/alien/laser colours from
+    SvgWeapon's CSS), additively blended.
+- `useSpaceGame.js`: added `getShipRenderState()` and a hit-testing `handleClick()`
+  (fire on a UFO / fly on empty space) to replace the removed per-UFO DOM click
+  targets; dropped the last `ship.value` DOM guard in `fireForward`.
+- `History.vue`: removed the ship `<img>`, `SvgUFO`, and `SvgWeapon` (+ their
+  imports/registration); overlay `@click` now routes to `handleClick`. UFO health
+  bars stay DOM for now.
+
+Needs a browser to confirm: ship facing/rotation direction (`rotation.z` sign),
+the white ship backing, bolt glow sizing, and UFO depth tint.
+
 ## Phase 3 — Secondary entities & starfield
 **Goal:** Ally starship + Enterprise sprite, ally phaser beam (line geometry),
 power-up badges, and the scrolling starfield/twinkling background (shader or

@@ -1,40 +1,75 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 import * as THREE from 'three'
+import ufoUrl from '@/assets/ufo.svg'
 
-// Phase 0-1 Three.js stage. Proves the rendering stack coexists with the DOM
-// game (Phase 0) and shares its coordinate space (Phase 1).
+// Phase 2 Three.js renderer. Draws the gameplay-critical entities - the player
+// ship, the UFOs, and the projectiles - as textured quads in a WebGL canvas,
+// reading the game's reactive state (useSpaceGame) once per frame. The DOM/CSS
+// versions of these three are removed from History.vue; everything else (HUD,
+// radar, ally, power-ups, effects, starfield) stays DOM for now.
 //
-// World space (matching the game logic in useSpaceGame): container pixels, origin
-// at the top-left, +x right, +y down. The orthographic camera is sized so one
-// scene unit == one CSS pixel, and toScene() flips only the Y axis so world
-// coordinates map straight onto the scene with no per-entity conversion. That's
-// the coordinate bridge the rest of the port builds on.
-//
-// Verification hook: the debug sprite tracks the cursor (in world coords), so you
-// can confirm the screen -> world -> scene round-trip lines up exactly - including
-// in fullscreen, where the container's screen origin moves.
-export default function useThreeStage (active) {
+// World space matches the game logic: container pixels, origin top-left, +y down.
+// The orthographic camera is 1 unit = 1 px; toScene() flips only Y so world
+// coordinates map straight onto the scene. Layering is controlled purely by
+// renderOrder (depth test off), mirroring the old CSS z-index stack.
+
+const SHIP_SIZE = 40 // matches SHIP_SIZE in useSpaceGame (Tailwind w-10 h-10)
+const SHIP_TEXTURE_URL =
+  'https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png'
+
+// Projectile look, derived from SvgWeapon.vue's CSS. core = visible dot size;
+// the quad is drawn larger so the baked-in radial glow has room to fall off.
+const BOLT_STYLES = {
+  player: { core: 12, rgb: '252,165,165', glow: '248,113,113' },
+  alien: { core: 12, rgb: '134,239,172', glow: '74,222,128' },
+  laser: { core: 16, rgb: '236,254,255', glow: '34,211,238' },
+}
+
+const RENDER_ORDER = { bolt: 20, shipBack: 24, ship: 25 } // enemies use their zIndex (1 or 12)
+
+export default function useThreeStage (active, game) {
   const stageCanvas = ref(null)
 
   let renderer = null
   let scene = null
   let camera = null
-  let sprite = null
-  let texture = null
-  let material = null
+  let unitGeometry = null
   let resizeObserver = null
-  let pointerTarget = null
   let rafId = null
-  let startTime = 0
   let viewWidth = 1
   let viewHeight = 1
 
-  // Latest cursor position in world coords, or null before the first move.
-  let pointerWorld = null
+  // Shared textures.
+  let shipTexture = null
+  let ufoTexture = null
+  const boltTextures = {} // player | alien | laser -> CanvasTexture
 
-  // World (container px, +y down) -> scene (same units, +y up). The camera places
-  // the origin at the bottom-left, so we flip Y; X passes straight through.
+  // Entities.
+  let shipGroup = null
+  const enemyMeshes = new Map() // enemy.id -> Mesh
+  const boltMeshes = new Map() // projectile.id -> Mesh
+
+  // World (container px, +y down) -> scene (same units, +y up).
   const toScene = (x, y) => [x, viewHeight - y]
+
+  // A soft radial gradient (hot-white core -> colour -> transparent) baked to a
+  // texture, so an additively-blended quad reads as a glowing bolt.
+  const makeBoltTexture = (rgb, glow) => {
+    const size = 64
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = size
+    const ctx = canvas.getContext('2d')
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+    g.addColorStop(0.0, 'rgba(255,255,255,1)')
+    g.addColorStop(0.25, `rgba(${rgb},1)`)
+    g.addColorStop(0.6, `rgba(${glow},0.5)`)
+    g.addColorStop(1.0, `rgba(${glow},0)`)
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, size, size)
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.colorSpace = THREE.SRGBColorSpace
+    return tex
+  }
 
   const sizeToContainer = () => {
     const canvas = stageCanvas.value
@@ -43,12 +78,9 @@ export default function useThreeStage (active) {
     viewWidth = parent?.clientWidth || canvas.clientWidth || 1
     viewHeight = parent?.clientHeight || canvas.clientHeight || 1
 
-    // Cap DPR so retina/4K fullscreen doesn't tank the fill rate.
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     renderer.setSize(viewWidth, viewHeight, false)
 
-    // 1 unit == 1 px, origin bottom-left (+y up); toScene() maps the game's
-    // top-left / +y-down world coords into this.
     camera.left = 0
     camera.right = viewWidth
     camera.top = viewHeight
@@ -56,30 +88,121 @@ export default function useThreeStage (active) {
     camera.updateProjectionMatrix()
   }
 
-  const onPointerMove = (event) => {
-    const canvas = stageCanvas.value
-    if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    pointerWorld = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  const buildShip = () => {
+    const group = new THREE.Group()
+    // White backing quad to match the ship <img>'s bg-white.
+    const back = new THREE.Mesh(
+      unitGeometry,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, depthTest: false, depthWrite: false })
+    )
+    back.renderOrder = RENDER_ORDER.shipBack
+    const body = new THREE.Mesh(
+      unitGeometry,
+      new THREE.MeshBasicMaterial({ map: shipTexture, transparent: true, depthTest: false, depthWrite: false })
+    )
+    body.renderOrder = RENDER_ORDER.ship
+    group.add(back, body)
+    group.visible = false
+    scene.add(group)
+    return group
   }
 
-  const tick = (time) => {
-    if (!renderer) return
-    if (!startTime) startTime = time
-    const t = (time - startTime) / 1000
+  const updateShip = () => {
+    const s = game.getShipRenderState()
+    shipGroup.visible = s.visible
+    if (!s.visible) return
+    shipGroup.position.set(...toScene(s.x + SHIP_SIZE / 2, s.y + SHIP_SIZE / 2), 0)
+    // CSS rotate() is clockwise in screen space; scene +y is up, so negate.
+    shipGroup.rotation.z = -THREE.MathUtils.degToRad(s.angle)
+    // CSS scale(1/stretch, stretch) - warp squash-and-stretch.
+    shipGroup.scale.set(SHIP_SIZE / s.stretch, SHIP_SIZE * s.stretch, 1)
+  }
 
-    // Track the cursor once it has moved (proving the coordinate bridge); until
-    // then, orbit the centre so there's obvious life on screen.
-    if (pointerWorld) {
-      sprite.position.set(...toScene(pointerWorld.x, pointerWorld.y), 0)
-    } else {
-      const r = Math.min(viewWidth, viewHeight) * 0.25
-      sprite.position.set(
-        ...toScene(viewWidth / 2 + Math.cos(t) * r, viewHeight / 2 + Math.sin(t * 0.9) * r),
-        0
-      )
+  const makeEnemyMesh = () => {
+    const mesh = new THREE.Mesh(
+      unitGeometry,
+      new THREE.MeshBasicMaterial({ map: ufoTexture, transparent: true, depthTest: false, depthWrite: false })
+    )
+    scene.add(mesh)
+    return mesh
+  }
+
+  const reconcileEnemies = () => {
+    const enemies = game.enemies
+    for (const enemy of enemies) {
+      let mesh = enemyMeshes.get(enemy.id)
+      if (!mesh) {
+        mesh = makeEnemyMesh()
+        enemyMeshes.set(enemy.id, mesh)
+      }
+      mesh.visible = enemy.visible
+      if (!enemy.visible) continue
+      mesh.position.set(...toScene(enemy.x + enemy.size / 2, enemy.y + enemy.size / 2), 0)
+      mesh.scale.set(enemy.size, enemy.size, 1)
+      mesh.renderOrder = enemy.zIndex // 1 or 12, closer UFOs (>=60px) in front
+      // brightness 40..100% -> greyscale tint, cheaply reproducing the depth cue.
+      mesh.material.color.setScalar(Math.min(enemy.brightness / 100, 1))
     }
+    // Drop meshes for enemies no longer in the pool.
+    for (const [id, mesh] of enemyMeshes) {
+      if (!enemies.some((e) => e.id === id)) {
+        scene.remove(mesh)
+        mesh.material.dispose()
+        enemyMeshes.delete(id)
+      }
+    }
+  }
 
+  const boltKind = (p) => (p.laser ? 'laser' : p.owner === 'alien' ? 'alien' : 'player')
+
+  const makeBoltMesh = (kind) => {
+    const mesh = new THREE.Mesh(
+      unitGeometry,
+      new THREE.MeshBasicMaterial({
+        map: boltTextures[kind],
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    )
+    mesh.renderOrder = RENDER_ORDER.bolt
+    mesh.userData.kind = kind
+    scene.add(mesh)
+    return mesh
+  }
+
+  const reconcileBolts = () => {
+    const bolts = game.projectiles
+    for (const p of bolts) {
+      const kind = boltKind(p)
+      let mesh = boltMeshes.get(p.id)
+      if (!mesh || mesh.userData.kind !== kind) {
+        if (mesh) { scene.remove(mesh); mesh.material.dispose() }
+        mesh = makeBoltMesh(kind)
+        boltMeshes.set(p.id, mesh)
+      }
+      const core = BOLT_STYLES[kind].core
+      const footprint = core * 2 // room for the glow
+      mesh.position.set(...toScene(p.x + core / 2, p.y + core / 2), 0)
+      mesh.scale.set(footprint, footprint, 1)
+    }
+    for (const [id, mesh] of boltMeshes) {
+      if (!bolts.some((p) => p.id === id)) {
+        scene.remove(mesh)
+        mesh.material.dispose()
+        boltMeshes.delete(id)
+      }
+    }
+  }
+
+  const tick = () => {
+    if (!renderer) return
+    if (game) {
+      updateShip()
+      reconcileEnemies()
+      reconcileBolts()
+    }
     renderer.render(scene, camera)
     rafId = requestAnimationFrame(tick)
   }
@@ -90,36 +213,28 @@ export default function useThreeStage (active) {
 
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
     scene = new THREE.Scene()
-
-    // Placeholder frustum; real extents get set by sizeToContainer() below.
     camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 10)
     camera.position.z = 5
 
-    // Reuse the real ship art to prove the texture pipeline end to end.
+    unitGeometry = new THREE.PlaneGeometry(1, 1)
+
     const loader = new THREE.TextureLoader()
     loader.setCrossOrigin('anonymous')
-    texture = loader.load(
-      'https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png'
-    )
-    texture.colorSpace = THREE.SRGBColorSpace
+    shipTexture = loader.load(SHIP_TEXTURE_URL)
+    shipTexture.colorSpace = THREE.SRGBColorSpace
+    ufoTexture = loader.load(ufoUrl)
+    ufoTexture.colorSpace = THREE.SRGBColorSpace
 
-    // Tinted + translucent so it reads as a debug marker, not a second ship.
-    material = new THREE.SpriteMaterial({ map: texture, color: 0x66ccff, transparent: true, opacity: 0.85 })
-    sprite = new THREE.Sprite(material)
-    sprite.scale.set(48, 48, 1)
-    scene.add(sprite)
+    boltTextures.player = makeBoltTexture(BOLT_STYLES.player.rgb, BOLT_STYLES.player.glow)
+    boltTextures.alien = makeBoltTexture(BOLT_STYLES.alien.rgb, BOLT_STYLES.alien.glow)
+    boltTextures.laser = makeBoltTexture(BOLT_STYLES.laser.rgb, BOLT_STYLES.laser.glow)
+
+    shipGroup = buildShip()
 
     sizeToContainer()
-
     resizeObserver = new ResizeObserver(sizeToContainer)
     if (canvas.parentElement) resizeObserver.observe(canvas.parentElement)
 
-    // Listen on the overlay (the canvas is pointer-events-none, so events pass
-    // through to it). Keep the exact target so teardown can detach cleanly.
-    pointerTarget = canvas.parentElement
-    pointerTarget?.addEventListener('pointermove', onPointerMove)
-
-    startTime = 0
     rafId = requestAnimationFrame(tick)
   }
 
@@ -130,24 +245,27 @@ export default function useThreeStage (active) {
       resizeObserver.disconnect()
       resizeObserver = null
     }
-    if (pointerTarget) {
-      pointerTarget.removeEventListener('pointermove', onPointerMove)
-      pointerTarget = null
-    }
-    if (material) material.dispose()
-    if (texture) texture.dispose()
+    for (const mesh of enemyMeshes.values()) mesh.material.dispose()
+    for (const mesh of boltMeshes.values()) mesh.material.dispose()
+    enemyMeshes.clear()
+    boltMeshes.clear()
+    if (shipGroup) shipGroup.children.forEach((c) => c.material.dispose())
+    shipGroup = null
+    if (unitGeometry) unitGeometry.dispose()
+    if (shipTexture) shipTexture.dispose()
+    if (ufoTexture) ufoTexture.dispose()
+    Object.values(boltTextures).forEach((t) => t.dispose())
+    for (const k of Object.keys(boltTextures)) delete boltTextures[k]
     if (renderer) {
       renderer.dispose()
       renderer.forceContextLoss?.()
     }
-    renderer = scene = camera = sprite = texture = material = null
-    pointerWorld = null
-    startTime = 0
+    renderer = scene = camera = unitGeometry = shipTexture = ufoTexture = null
   }
 
   // The canvas is behind a v-if (alien mode, desktop only), so it only exists in
-  // the DOM some of the time. Wait for BOTH the ref to populate and active to be
-  // true before starting; flip either off and we tear the stage down.
+  // the DOM some of the time. Wait for BOTH the ref and active before starting;
+  // flip either off and we tear the stage down.
   watch(
     [() => active.value, stageCanvas],
     ([isActive, canvas]) => {

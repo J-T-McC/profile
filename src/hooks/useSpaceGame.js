@@ -750,6 +750,18 @@ export default function useSpaceGame (isActive) {
     radius: SHIP_SIZE / 2 + PROJECTILE_HIT_PADDING,
   })
 
+  // Snapshot of the ship's render state for the Three.js renderer, which polls it
+  // once per frame. A plain getter (rather than exposing refs) keeps the hot-path
+  // shipX/shipY/shipStretch as module-local lets. Position is the ship's top-left
+  // (matching the old CSS top/left); angle is degrees, stretch is the warp factor.
+  const getShipRenderState = () => ({
+    x: shipX,
+    y: shipY,
+    angle: shipAngle.value,
+    stretch: shipStretch,
+    visible: gameState.value === GAME_STATE.PLAYING && !shipExplosion.active,
+  })
+
   // The core of a hit landing on an enemy - scoring, health/kill/respawn handling and the
   // hit/kill feedback - independent of what dealt it, so both a player projectile
   // (damageEnemy) and the ally's instantaneous phaser beam can share it.
@@ -1143,7 +1155,7 @@ export default function useSpaceGame (isActive) {
   const fireForward = () => {
     // Nothing sensible to fire at until the ship has faced a direction at least once
     // (e.g. Space pressed before any mouse movement), and not while paused/dead.
-    if (!ship.value || !hasFacing || gameState.value !== GAME_STATE.PLAYING) return
+    if (!hasFacing || gameState.value !== GAME_STATE.PLAYING) return
 
     // Invert rotateShip's degree formula to recover the angle in radians:
     // degree = (radians * (180 / Math.PI) * -1) + 180  =>  radians = (180 - degree) * (Math.PI / 180)
@@ -1216,12 +1228,26 @@ export default function useSpaceGame (isActive) {
     if (gameState.value !== GAME_STATE.PLAYING) return
     dismissHint()
 
-    // Clicking an enemy uses @click.stop (it fires instead of flying), so this only ever
-    // runs for clicks on empty space.
     const pointer = pointerToWorld(event)
     shipTargetX = pointer.x
     shipTargetY = pointer.y
     triggerWarpEffect()
+  }
+
+  // Single click entry point for the game overlay. With the UFOs rendered in-canvas
+  // there are no per-UFO DOM click targets anymore, so we hit-test here: a click on a
+  // live enemy fires at it, otherwise it's a "fly here" move. This replaces the old
+  // split of @click.stop on each UFO (fire) vs @click on the overlay (move).
+  const handleClick = (event) => {
+    if (gameState.value !== GAME_STATE.PLAYING) return
+    const p = pointerToWorld(event)
+    const onEnemy = enemies.some((enemy) => {
+      if (!enemy.visible || enemy.health <= 0) return false
+      const c = getEnemyHitCircle(enemy)
+      return Math.hypot(p.x - c.x, p.y - c.y) <= c.radius
+    })
+    if (onEnemy) ufoClicked(event)
+    else moveShip(event)
   }
 
   const tick = (time) => {
@@ -1649,7 +1675,9 @@ export default function useSpaceGame (isActive) {
     shipPos,
     rotateShip,
     moveShip,
+    handleClick,
     onKeyDown,
     ufoClicked,
+    getShipRenderState,
   }
 }
