@@ -71,12 +71,31 @@ const LASER_DAMAGE = 2               // laser shots deal double the normal 1 dam
 const REGULAR_HOMING_TURN_RATE = 2   // rad/s - weaker than the laser's tracking
 const REGULAR_HOMING_RADIUS = 80     // px from the UFO's centre before the nudge kicks in
 
+// Player health - the UFO's return fire now costs the player a point per unblocked hit
+// (and still heals the UFO one). No passive regen; only health pickups restore it.
+const PLAYER_MAX_HEALTH = 10
+const PLAYER_HIT_DAMAGE = 1          // health lost per unblocked alien hit
+const HEALTH_ITEM_RESTORE = 4        // health restored by a health pickup
+const SHIELD_BUFF_DURATION = 8000    // ms a shield pickup blocks all incoming hits for
+
+// Power-up categories - weapon buffs are mutually exclusive with each other, but stack
+// alongside a shield and health pickups (you can hold a laser AND a shield at once).
+const POWERUP_CATEGORY = {
+  WEAPON: 'weapon',
+  SHIELD: 'shield',
+  HEALTH: 'health',
+}
+
+// Floating power-ups. minLevel gates when each first appears; weight biases how often it's
+// picked relative to the others (defensive pickups are weighted down so they're rarer).
 const POWERUP_TYPES = {
-  rapid2: { minLevel: 4, label: '2×', color: '#38bdf8', fireRateMultiplier: 2 },
-  rapid3: { minLevel: 5, label: '3×', color: '#818cf8', fireRateMultiplier: 3 },
-  double: { minLevel: 5, label: '2•', color: '#facc15', doubleShot: true },
-  rapid4: { minLevel: 7, label: '4×', color: '#f472b6', fireRateMultiplier: 4 },
-  laser: { minLevel: 8, label: 'L', color: '#34d399', laser: true },
+  rapid2: { minLevel: 4, category: POWERUP_CATEGORY.WEAPON, label: '2×', color: '#38bdf8', fireRateMultiplier: 2 },
+  rapid3: { minLevel: 5, category: POWERUP_CATEGORY.WEAPON, label: '3×', color: '#818cf8', fireRateMultiplier: 3 },
+  double: { minLevel: 5, category: POWERUP_CATEGORY.WEAPON, label: '2•', color: '#facc15', doubleShot: true },
+  rapid4: { minLevel: 7, category: POWERUP_CATEGORY.WEAPON, label: '4×', color: '#f472b6', fireRateMultiplier: 4 },
+  laser: { minLevel: 8, category: POWERUP_CATEGORY.WEAPON, label: 'L', color: '#34d399', laser: true },
+  health: { minLevel: 4, category: POWERUP_CATEGORY.HEALTH, label: '♥', color: '#f87171', weight: 0.5, restore: HEALTH_ITEM_RESTORE },
+  shield: { minLevel: 5, category: POWERUP_CATEGORY.SHIELD, label: '⛊', color: '#22d3ee', weight: 0.5, duration: SHIELD_BUFF_DURATION },
 }
 
 // CSS property names written into the reactive style objects (shipPos/ufoPos). Defined
@@ -153,6 +172,9 @@ export default function useSpaceGame () {
     '2x': 'rapid2',
     '3x': 'rapid3',
     '4x': 'rapid4',
+    shield: 'shield',
+    health: 'health',
+    hp: 'health',
   }
 
   const ufoHealthRatio = computed(() => ufoHealth.value / UFO_MAX_HEALTH)
@@ -182,13 +204,37 @@ export default function useSpaceGame () {
   let nextPowerUpId = 0
   let powerUpSpawnTimeoutId = null
 
-  const activeBuffType = ref(null)
-  const buffRemainingMs = ref(0)
-  let buffExpiresAt = 0
+  // Weapon buff (mutually exclusive among weapon types) and shield (stacks with it) each
+  // run on their own countdown; health pickups are instant, so they have no active state.
+  const activeWeaponBuff = ref(null)
+  let weaponBuffExpiresAt = 0
+  const weaponBuffRemainingMs = ref(0)
 
-  const activeBuffLabel = computed(() => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value].label : null)
-  const activeBuffColor = computed(() => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value].color : null)
-  const activeBuffSecondsRemaining = computed(() => Math.ceil(buffRemainingMs.value / 1000))
+  const shieldActive = ref(false)
+  let shieldExpiresAt = 0
+  const shieldRemainingMs = ref(0)
+
+  const playerHealth = ref(PLAYER_MAX_HEALTH)
+  const playerHealthRatio = computed(() => playerHealth.value / PLAYER_MAX_HEALTH)
+  const playerHealthColor = computed(() => {
+    if (playerHealthRatio.value > 0.6) return '#34d399' // green
+    if (playerHealthRatio.value > 0.3) return '#fbbf24' // amber
+    return '#f87171' // red
+  })
+
+  // The timed buffs currently showing in the HUD, each as its own countdown badge.
+  const activeBuffs = computed(() => {
+    const list = []
+    if (activeWeaponBuff.value) {
+      const type = POWERUP_TYPES[activeWeaponBuff.value]
+      list.push({ id: 'weapon', label: type.label, color: type.color, seconds: Math.ceil(weaponBuffRemainingMs.value / 1000) })
+    }
+    if (shieldActive.value) {
+      const type = POWERUP_TYPES.shield
+      list.push({ id: 'shield', label: type.label, color: type.color, seconds: Math.ceil(shieldRemainingMs.value / 1000) })
+    }
+    return list
+  })
 
   // Radar minimap - the ship's and UFO's field positions, normalised to 0..1 of the
   // container each frame in tick() (the raw shipX/ufoX vars aren't reactive), so the
@@ -275,7 +321,19 @@ export default function useSpaceGame () {
   // Which power-up types are allowed to spawn at the current level - grows as level
   // increases, so stronger buffs only start showing up once you've levelled up enough.
   const getAvailablePowerUpTypeIds = () => Object.keys(POWERUP_TYPES).filter(id => level.value >= POWERUP_TYPES[id].minLevel)
-  const getActiveBuff = () => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value] : null
+  const getActiveWeaponBuff = () => activeWeaponBuff.value ? POWERUP_TYPES[activeWeaponBuff.value] : null
+
+  // Weighted random pick from the given power-up type ids - lets defensive pickups
+  // (health/shield, given a lower weight) show up less often than weapon buffs.
+  const pickWeightedPowerUpType = (ids) => {
+    const total = ids.reduce((sum, id) => sum + (POWERUP_TYPES[id].weight ?? 1), 0)
+    let roll = Math.random() * total
+    for (const id of ids) {
+      roll -= POWERUP_TYPES[id].weight ?? 1
+      if (roll <= 0) return id
+    }
+    return ids[ids.length - 1]
+  }
 
   // --- Sound (synthesized via Web Audio - no external audio files) -------------------
 
@@ -625,14 +683,22 @@ export default function useSpaceGame () {
   // no player health), it heals the UFO back up, capped at full health.
   const registerAlienHit = (projectile) => {
     projectile.state = PROJECTILE_STATE.HIT
-    ufoHealth.value = Math.min(UFO_MAX_HEALTH, ufoHealth.value + ALIEN_HEAL_AMOUNT)
-    playHealSound()
 
-    shipHit.value = true
-    clearTimeout(shipHitTimeoutId)
-    shipHitTimeoutId = setTimeout(() => {
-      shipHit.value = false
-    }, SHIP_HIT_FLASH_DURATION)
+    if (shieldActive.value) {
+      // Shield up: the shot is deflected entirely - no player damage, no UFO heal.
+      playInterceptSound()
+    } else {
+      // Otherwise the player loses a point and the UFO heals one.
+      playerHealth.value = Math.max(0, playerHealth.value - PLAYER_HIT_DAMAGE)
+      ufoHealth.value = Math.min(UFO_MAX_HEALTH, ufoHealth.value + ALIEN_HEAL_AMOUNT)
+      playHealSound()
+
+      shipHit.value = true
+      clearTimeout(shipHitTimeoutId)
+      shipHitTimeoutId = setTimeout(() => {
+        shipHit.value = false
+      }, SHIP_HIT_FLASH_DURATION)
+    }
 
     setTimeout(() => {
       const index = projectiles.indexOf(projectile)
@@ -661,7 +727,7 @@ export default function useSpaceGame () {
   // A "rapid fire" buff shortens the cooldown by its multiplier; no active buff (or a
   // non-rate buff like double/laser) leaves it at the base rate.
   const canFire = () => {
-    const multiplier = getActiveBuff()?.fireRateMultiplier ?? 1
+    const multiplier = getActiveWeaponBuff()?.fireRateMultiplier ?? 1
     return (performance.now() - lastFireTime) >= (FIRE_COOLDOWN / multiplier)
   }
 
@@ -675,7 +741,7 @@ export default function useSpaceGame () {
     lastFireTime = performance.now()
     playLaserSound()
 
-    const buff = getActiveBuff()
+    const buff = getActiveWeaponBuff()
     const isLaser = !!buff?.laser
     const speed = isLaser ? PROJECTILE_SPEED * LASER_SPEED_MULTIPLIER : PROJECTILE_SPEED
     const hitPaddingBonus = isLaser ? LASER_HIT_PADDING_BONUS : 0
@@ -747,7 +813,7 @@ export default function useSpaceGame () {
     const availableIds = getAvailablePowerUpTypeIds()
     if (!availableIds.length) return
 
-    const type = availableIds[Math.floor(Math.random() * availableIds.length)]
+    const type = pickWeightedPowerUpType(availableIds)
     const containerWidth = container.value.offsetWidth
     const containerHeight = container.value.offsetHeight
     const fromLeft = Math.random() < 0.5
@@ -788,23 +854,38 @@ export default function useSpaceGame () {
     }, delay)
   }
 
-  // Activates (or refreshes) a weapon buff by type id - only one is ever active at a
-  // time, so this replaces whatever was there. buffExpiresAt is on the same clock as the
-  // tick loop's `time` (both DOMHighResTimeStamp), so performance.now() is interchangeable
-  // whether this is triggered from a pickup mid-frame or a keydown cheat.
-  const activateBuff = (typeId) => {
-    if (!POWERUP_TYPES[typeId]) return
-    activeBuffType.value = typeId
-    buffExpiresAt = performance.now() + POWERUP_BUFF_DURATION
-    buffRemainingMs.value = POWERUP_BUFF_DURATION
-    playPowerUpSound()
+  // Applies a power-up by type id, dispatching on its category (weapon buff / shield /
+  // instant heal). The expiry timestamps live on the same clock as the tick loop's `time`
+  // (both DOMHighResTimeStamp), so performance.now() is interchangeable whether this is
+  // triggered from a pickup mid-frame or a keydown cheat.
+  const applyPowerUp = (typeId, now = performance.now()) => {
+    const type = POWERUP_TYPES[typeId]
+    if (!type) return
+
+    if (type.category === POWERUP_CATEGORY.WEAPON) {
+      // Weapon buffs are mutually exclusive - a new one replaces/refreshes the last.
+      activeWeaponBuff.value = typeId
+      weaponBuffExpiresAt = now + POWERUP_BUFF_DURATION
+      weaponBuffRemainingMs.value = POWERUP_BUFF_DURATION
+      playPowerUpSound()
+    } else if (type.category === POWERUP_CATEGORY.SHIELD) {
+      // Shield stacks alongside any weapon buff; a new one just refreshes the timer.
+      shieldActive.value = true
+      shieldExpiresAt = now + type.duration
+      shieldRemainingMs.value = type.duration
+      playPowerUpSound()
+    } else if (type.category === POWERUP_CATEGORY.HEALTH) {
+      // Instant restore, capped at full health.
+      playerHealth.value = Math.min(PLAYER_MAX_HEALTH, playerHealth.value + type.restore)
+      playHealSound()
+    }
   }
 
-  // Flying into a power-up immediately grants its buff, replacing/refreshing whatever
-  // (if anything) was already active - only one weapon buff is active at a time.
+  // Flying into a power-up immediately applies its effect - weapon buffs replace each
+  // other, while a shield or a heal stacks alongside whatever weapon buff is active.
   const collectPowerUp = (powerUp) => {
     powerUp.state = POWERUP_STATE.COLLECTED
-    activateBuff(powerUp.type)
+    applyPowerUp(powerUp.type)
 
     setTimeout(() => {
       const index = powerUps.indexOf(powerUp)
@@ -831,6 +912,7 @@ export default function useSpaceGame () {
   const applyCheatLevel = (targetLevel) => {
     level.value = Math.max(1, Math.floor(targetLevel))
     ufoHealth.value = UFO_MAX_HEALTH
+    playerHealth.value = PLAYER_MAX_HEALTH
     ufoDestroyed.value = false
     ufoVisible.value = true
     clearTimeout(respawnTimeoutId)
@@ -851,7 +933,7 @@ export default function useSpaceGame () {
         applyCheatLevel(Number(levelMatch[1]))
       } else {
         const buffCode = Object.keys(BUFF_CHEAT_CODES).find(code => cheatBuffer.toLowerCase().endsWith(code))
-        if (buffCode) activateBuff(BUFF_CHEAT_CODES[buffCode])
+        if (buffCode) applyPowerUp(BUFF_CHEAT_CODES[buffCode])
       }
       cheatBuffer = ''
       return
@@ -1047,12 +1129,14 @@ export default function useSpaceGame () {
       }
     }
 
-    // Expire the active weapon buff once its time is up.
-    if (activeBuffType.value) {
-      buffRemainingMs.value = Math.max(0, buffExpiresAt - time)
-      if (buffRemainingMs.value <= 0) {
-        activeBuffType.value = null
-      }
+    // Expire the timed buffs (weapon + shield) once each one's time is up.
+    if (activeWeaponBuff.value) {
+      weaponBuffRemainingMs.value = Math.max(0, weaponBuffExpiresAt - time)
+      if (weaponBuffRemainingMs.value <= 0) activeWeaponBuff.value = null
+    }
+    if (shieldActive.value) {
+      shieldRemainingMs.value = Math.max(0, shieldExpiresAt - time)
+      if (shieldRemainingMs.value <= 0) shieldActive.value = false
     }
 
     // Smarter UFO AI: keep evading for as long as the cursor lingers nearby, instead of
@@ -1114,11 +1198,11 @@ export default function useSpaceGame () {
     projectiles,
     warpFlashes,
     powerUps,
-    activeBuffType,
-    activeBuffLabel,
-    activeBuffColor,
-    activeBuffSecondsRemaining,
-    buffRemainingMs,
+    activeBuffs,
+    shieldActive,
+    playerHealth,
+    playerHealthRatio,
+    playerHealthColor,
     radarShip,
     radarUfo,
     shipPos,

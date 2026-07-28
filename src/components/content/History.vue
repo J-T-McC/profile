@@ -15,10 +15,18 @@
            itself is pointer-events-none so its transparent middle doesn't swallow game
            clicks/mousemove; only the actual widgets re-enable pointer events. -->
       <div class="sticky top-20 mt-2 px-2 z-10 flex items-start justify-between pointer-events-none">
-        <div class="flex items-center gap-2 pointer-events-auto">
-          <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
-          <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
-          <div v-if="activeBuffType" class="buff-badge gamify text-sm" :style="{color: activeBuffColor, borderColor: activeBuffColor}">{{ activeBuffLabel }} <span class="opacity-70">{{ activeBuffSecondsRemaining }}s</span></div>
+        <div class="flex flex-col gap-1 pointer-events-auto">
+          <div class="flex items-center gap-2">
+            <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
+            <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
+            <div v-for="buff in activeBuffs" :key="buff.id" class="buff-badge gamify text-sm" :style="{color: buff.color, borderColor: buff.color}">{{ buff.label }} <span class="opacity-70">{{ buff.seconds }}s</span></div>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="gamify text-white text-xs">HP</span>
+            <div class="player-health-track">
+              <div class="player-health-fill" :style="{width: (playerHealthRatio * 100) + '%', backgroundColor: playerHealthColor}"></div>
+            </div>
+          </div>
         </div>
         <div class="radar pointer-events-auto">
           <div class="radar-sweep"></div>
@@ -32,7 +40,7 @@
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
-      <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
+      <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit, 'ship-shielded': shieldActive}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
       <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser"/>
 
       <div
@@ -117,10 +125,10 @@ export default {
       projectiles,
       warpFlashes,
       powerUps,
-      activeBuffType,
-      activeBuffLabel,
-      activeBuffColor,
-      activeBuffSecondsRemaining,
+      activeBuffs,
+      shieldActive,
+      playerHealthRatio,
+      playerHealthColor,
       radarShip,
       radarUfo,
       shipPos,
@@ -178,10 +186,10 @@ export default {
       projectiles,
       warpFlashes,
       powerUps,
-      activeBuffType,
-      activeBuffLabel,
-      activeBuffColor,
-      activeBuffSecondsRemaining,
+      activeBuffs,
+      shieldActive,
+      playerHealthRatio,
+      playerHealthColor,
       radarShip,
       radarUfo,
       hit,
@@ -339,6 +347,24 @@ export default {
 .ufo-health-fill {
   height: 100%;
   transition: width 0.2s ease-out, background-color 0.2s ease-out;
+}
+
+.player-health-track {
+  width: 120px;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.player-health-fill {
+  height: 100%;
+  transition: width 0.2s ease-out, background-color 0.2s ease-out;
+}
+
+/* Cyan aura while a shield buff is active, layered on top of the ship's own transition. */
+.ship-shielded {
+  filter: drop-shadow(0 0 6px #22d3ee) drop-shadow(0 0 12px #06b6d4);
 }
 
 .ufo-destroyed {
