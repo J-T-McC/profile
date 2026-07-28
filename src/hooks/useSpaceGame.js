@@ -23,6 +23,8 @@ const UFO_DESTROYED_FLASH_DURATION = 1200 // ms - bigger flash played on a kill 
 const UFO_RESPAWN_DELAY = 2500      // ms the UFO stays gone after being destroyed, before it respawns
 const KILL_BONUS_SCORE = 5          // extra points awarded on top of the +1 for the killing hit
 const LEVEL_DIFFICULTY_CAP = 10     // level at which reaction-time difficulty maxes out
+const ENEMY_WANDER_INTERVAL = 10000 // ms - max idle interval before an enemy drifts to a new spot
+const LEVELS_PER_NEW_ENEMY = 10     // an additional enemy UFO joins the field every this many levels
 
 // "Reaction time" difficulty knobs - how alert/agile the UFO is, scaled by level from an
 // easy starting point up toward (and eventually past) a much more alert ceiling. Level 1
@@ -98,9 +100,8 @@ const POWERUP_TYPES = {
   shield: { minLevel: 5, category: POWERUP_CATEGORY.SHIELD, label: '⛊', color: '#22d3ee', weight: 0.5, duration: SHIELD_BUFF_DURATION },
 }
 
-// CSS property names written into the reactive style objects (shipPos/ufoPos). Defined
-// once here rather than retyping the literal at each assignment - the resolved values are
-// identical to before, so template code reading e.g. ufoPos['transition-duration'] still works.
+// CSS property names written into the reactive ship style object (shipPos). Defined once
+// here rather than retyping the literal at each assignment.
 const CSS = {
   transitionProperty: 'transition-property',
   transitionDuration: 'transition-duration',
@@ -138,20 +139,20 @@ export const POWERUP_STATE = {
 export default function useSpaceGame () {
   const container = ref(null)
   const ship = ref(null)
-  const ufo = ref(null)
 
   const score = ref(0)
   const bestScore = ref(0)
-  const hit = ref(false)
   const scorePulse = ref(false)
   const hintVisible = ref(true)
 
   const level = ref(1)
-  const ufoHealth = ref(UFO_MAX_HEALTH)
-  const ufoDestroyed = ref(false)
-  const ufoVisible = ref(true)
-  let ufoDestroyedTimeoutId = null
-  let respawnTimeoutId = null
+
+  // All active enemy UFOs. Starts at one and grows by one every LEVELS_PER_NEW_ENEMY
+  // levels (see enemyCountForLevel / syncEnemyCount). Each enemy owns its full state -
+  // position/target/size/health plus its own flee, wander and return-fire timers - and
+  // respawns individually on death.
+  const enemies = reactive([])
+  let nextEnemyId = 0
 
   // Dev/testing cheat code - type "level" followed by a number then Enter (e.g.
   // "level5" + Enter) to jump straight to that level instead of grinding up to it.
@@ -177,12 +178,13 @@ export default function useSpaceGame () {
     hp: 'health',
   }
 
-  const ufoHealthRatio = computed(() => ufoHealth.value / UFO_MAX_HEALTH)
-  const ufoHealthColor = computed(() => {
-    if (ufoHealthRatio.value > 0.6) return '#34d399' // green
-    if (ufoHealthRatio.value > 0.3) return '#fbbf24' // amber
+  // Shared green/amber/red mapping for any 0..1 health ratio (the player and each enemy).
+  const healthColor = (ratio) => {
+    if (ratio > 0.6) return '#34d399' // green
+    if (ratio > 0.3) return '#fbbf24' // amber
     return '#f87171' // red
-  })
+  }
+  const enemyHealthRatio = (enemy) => enemy.health / UFO_MAX_HEALTH
 
   const highScoreStore = useLocalStore(STORE.NAMESPACE)
   bestScore.value = highScoreStore.get(STORE.BEST_SCORE, 0)
@@ -216,11 +218,7 @@ export default function useSpaceGame () {
 
   const playerHealth = ref(PLAYER_MAX_HEALTH)
   const playerHealthRatio = computed(() => playerHealth.value / PLAYER_MAX_HEALTH)
-  const playerHealthColor = computed(() => {
-    if (playerHealthRatio.value > 0.6) return '#34d399' // green
-    if (playerHealthRatio.value > 0.3) return '#fbbf24' // amber
-    return '#f87171' // red
-  })
+  const playerHealthColor = computed(() => healthColor(playerHealthRatio.value))
 
   // The timed buffs currently showing in the HUD, each as its own countdown badge.
   const activeBuffs = computed(() => {
@@ -236,11 +234,11 @@ export default function useSpaceGame () {
     return list
   })
 
-  // Radar minimap - the ship's and UFO's field positions, normalised to 0..1 of the
-  // container each frame in tick() (the raw shipX/ufoX vars aren't reactive), so the
-  // radar can plot them as a fraction of its diameter regardless of its pixel size.
+  // Radar minimap - the ship's field position, normalised to 0..1 of the container each
+  // frame in tick() (the raw shipX/Y vars aren't reactive), so the radar can plot it as a
+  // fraction of its diameter regardless of pixel size. Each enemy carries its own
+  // normalised radarX/radarY on the enemy object.
   const radarShip = reactive({ x: 0.5, y: 0.5 })
-  const radarUfo = reactive({ x: 0.5, y: 0.5 })
 
   const shipAngle = ref(0)
   let hasFacing = false
@@ -248,7 +246,6 @@ export default function useSpaceGame () {
 
   const shipHit = ref(false) // brief flash when the alien's return fire connects
   let shipHitTimeoutId = null
-  let alienFireTimeoutId = null
 
   // Rendered ship style - top/left are driven every animation frame by the numeric
   // position below; only the rotation transform gets a CSS transition (for smoothing
@@ -267,32 +264,11 @@ export default function useSpaceGame () {
   let shipTargetX = 0
   let shipTargetY = 0
 
-  // Rendered UFO style - top/left are driven every animation frame (see tick()) just
-  // like the ship, so repeated retargeting (continuous flee) blends smoothly instead of
-  // restarting a fresh CSS transition mid-flight. width/height/filter still CSS-transition
-  // on their own timer for the size/depth-illusion morph between hops.
-  const ufoPos = reactive({
-    top: '-1000px',
-    left: '-1000px',
-    [CSS.transitionProperty]: 'width, height, filter',
-  })
-
-  // Numeric UFO position/target/speed driving the per-frame movement loop, same
-  // coordinate space as everything else (both container-relative here).
-  let ufoX = -1000
-  let ufoY = -1000
-  let ufoTargetX = -1000
-  let ufoTargetY = -1000
-  let ufoFollowRate = 3 // 1/s - recomputed per hop in randomizePosition() to roughly match its duration
-
-  // Last known cursor position (same coordinate space as the ship/UFO), used so the
-  // UFO can continuously evade a lingering cursor rather than only reacting once.
+  // Last known cursor position (same coordinate space as the ship/enemies), used so
+  // enemies can continuously evade a lingering cursor rather than only reacting once.
   let lastPointerX = null
   let lastPointerY = null
-  let lastFleeTime = 0
 
-  let animationTimeoutId = null
-  let hitTimeoutId = null
   let scorePulseTimeoutId = null
   let lastFireTime = 0
   let rafId = null
@@ -481,38 +457,78 @@ export default function useSpaceGame () {
     })
   }
 
-  const randomizePosition = () => {
+  // How many enemies should be on the field at a given level - one to start, plus one more
+  // every LEVELS_PER_NEW_ENEMY levels (so a new bad guy joins at level 10, 20, 30, ...).
+  const enemyCountForLevel = (lvl) => 1 + Math.floor(lvl / LEVELS_PER_NEW_ENEMY)
+
+  const createEnemy = () => ({
+    id: nextEnemyId++,
+    x: -1000, y: -1000,          // top/left in container coords, JS-driven each frame
+    targetX: -1000, targetY: -1000,
+    followRate: 3,               // 1/s - eased-follow rate toward the target
+    size: 40,                    // px (also drives the depth-illusion brightness/z-index)
+    brightness: 100,
+    zIndex: 1,
+    transitionDuration: '1s',    // CSS morph time for the size/depth change
+    health: UFO_MAX_HEALTH,
+    visible: true,
+    destroyed: false,            // brief kill-flash
+    hit: false,                  // brief red hit-flash
+    placed: false,               // false until first positioned (so it snaps, not glides, in)
+    lastFleeTime: 0,
+    nextWanderAt: 0,
+    nextFireAt: 0,
+    radarX: 0.5, radarY: 0.5,
+    hitTimeoutId: null,
+    destroyedTimeoutId: null,
+    respawnTimeoutId: null,
+  })
+
+  // Re-rolls an enemy's size (depth illusion), speed and next drift target. On the very
+  // first placement it snaps straight there rather than gliding in from off-screen.
+  const randomizeEnemy = (enemy) => {
     if (!container.value) return
     const durationSeconds = Math.ceil(Math.random() * 3)
-    const duration = durationSeconds + 's'
     const offset = Math.random() < 0.5 ? -100 : 100
 
     const size = Math.ceil(Math.random() * UFO_MAX_SIZE)
-    let brightness = (size / UFO_MAX_SIZE) * 100
-    brightness = brightness < 40 ? 40 : brightness
+    enemy.size = size
+    enemy.brightness = Math.max(40, (size / UFO_MAX_SIZE) * 100)
+    enemy.zIndex = size >= (UFO_MAX_SIZE * 0.8) ? 12 : 1
+    enemy.transitionDuration = durationSeconds + 's'
+    // Match the old hop pace, scaled by the current level's "reaction time".
+    enemy.followRate = (3 / durationSeconds) * getUfoSpeedMultiplier()
 
-    const zIndexThreshold = 0.8
-
-    // Position now glides continuously in tick() (see ufoFollowRate) rather than via a
-    // fresh CSS transition per hop - only the size/depth-illusion morph still uses one.
-    ufoPos[CSS.animationDuration] = duration
-    ufoPos[CSS.transitionDuration] = duration
-    ufoPos.height = `${size}px`
-    ufoPos.width = `${size}px`
-    ufoPos[CSS.zIndex] = size >= (UFO_MAX_SIZE * zIndexThreshold) ? 12 : 1
-    ufoPos.filter = `brightness(${brightness}%)`
-
-    // Roughly match the pace of the old CSS-transition hops (which fully arrived in
-    // `durationSeconds`) so the continuous glide still feels like a "hop" of similar speed,
-    // then scale by the current level's "reaction time" - sluggish early on, brisker later.
-    ufoFollowRate = (3 / durationSeconds) * getUfoSpeedMultiplier()
-
-    // Clamp to the container's bounds so the UFO can't spawn (partially) off-screen.
     const containerWidth = container.value.offsetWidth
     const containerHeight = container.value.offsetHeight
-    ufoTargetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - size, 0))
-    ufoTargetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - size, 0))
+    enemy.targetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - size, 0))
+    enemy.targetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - size, 0))
+
+    if (!enemy.placed) {
+      enemy.x = enemy.targetX
+      enemy.y = enemy.targetY
+      enemy.placed = true
+    }
   }
+
+  // Grows the live enemy list to match the current level (never shrinks - enemies persist
+  // and respawn individually; only the count going up matters here).
+  const syncEnemyCount = () => {
+    const target = enemyCountForLevel(level.value)
+    while (enemies.length < target) {
+      const enemy = createEnemy()
+      enemies.push(enemy)
+      randomizeEnemy(enemy)
+    }
+  }
+
+  // The enemy's live on-screen hit circle, computed straight from its JS-tracked position
+  // and size (no DOM read needed, since tick() drives its top/left every frame).
+  const getEnemyHitCircle = (enemy) => ({
+    x: enemy.x + enemy.size / 2,
+    y: enemy.y + enemy.size / 2,
+    radius: enemy.size / 2 + PROJECTILE_HIT_PADDING,
+  })
 
   // Combines the ship's current facing angle with its current warp-stretch factor into
   // a single transform - kept in one place so rotateShip and the warp effect (which run
@@ -587,22 +603,8 @@ export default function useSpaceGame () {
     }, WARP_SETTLE_DURATION + 20)
   }
 
-  // The UFO glides between spawn points via its own CSS transition, so its live
-  // on-screen position/size has to be read from the DOM rather than tracked in JS.
-  const getUfoHitCircle = () => {
-    if (!ufo.value?.$el || !container.value) return null
-    const ufoRect = ufo.value.$el.getBoundingClientRect()
-    const containerOffset = container.value.getBoundingClientRect()
-
-    return {
-      x: ufoRect.left + ufoRect.width / 2,
-      y: (ufoRect.top + ufoRect.height / 2) - containerOffset.top,
-      radius: Math.max(ufoRect.width, ufoRect.height) / 2 + PROJECTILE_HIT_PADDING,
-    }
-  }
-
-  // Mirrors getUfoHitCircle() but for the player's own ship, so the UFO's return fire
-  // can check for a hit against its actual on-screen position/size.
+  // The player's own ship hit circle (still read from the DOM, since the ship is a single
+  // element), so enemy return fire can check for a hit against its on-screen position/size.
   const getShipHitCircle = () => {
     if (!ship.value || !container.value) return null
     const shipRect = ship.value.getBoundingClientRect()
@@ -615,44 +617,48 @@ export default function useSpaceGame () {
     }
   }
 
-  const registerHit = (projectile) => {
+  const damageEnemy = (enemy, projectile) => {
     projectile.state = PROJECTILE_STATE.HIT
     score.value++
     scorePulse.value = true
 
-    ufoHealth.value = Math.max(0, ufoHealth.value - (projectile.damage || 1))
+    enemy.health = Math.max(0, enemy.health - (projectile.damage || 1))
 
-    if (ufoHealth.value === 0) {
-      // Destroyed - bigger flash/sound, level up (harder reaction time from here on),
-      // then stay gone for a beat before respawning elsewhere at full health.
+    if (enemy.health === 0) {
+      // Destroyed - bigger flash/sound, level up (harder reaction time from here on), then
+      // this enemy stays gone for a beat before respawning at full health. A new level may
+      // also unlock an additional enemy (every LEVELS_PER_NEW_ENEMY levels).
       score.value += KILL_BONUS_SCORE
       playDestroyedSound()
 
-      ufoDestroyed.value = true
-      clearTimeout(ufoDestroyedTimeoutId)
-      ufoDestroyedTimeoutId = setTimeout(() => {
-        ufoDestroyed.value = false
+      enemy.destroyed = true
+      clearTimeout(enemy.destroyedTimeoutId)
+      enemy.destroyedTimeoutId = setTimeout(() => {
+        enemy.destroyed = false
       }, UFO_DESTROYED_FLASH_DURATION)
 
       level.value++
-      ufoHealth.value = UFO_MAX_HEALTH
-      ufoVisible.value = false
+      enemy.visible = false
 
-      clearTimeout(respawnTimeoutId)
-      respawnTimeoutId = setTimeout(() => {
-        randomizePosition()
-        ufoVisible.value = true
+      clearTimeout(enemy.respawnTimeoutId)
+      enemy.respawnTimeoutId = setTimeout(() => {
+        enemy.health = UFO_MAX_HEALTH
+        enemy.placed = false // snap to the fresh spot rather than gliding from the kill site
+        randomizeEnemy(enemy)
+        enemy.visible = true
       }, UFO_RESPAWN_DELAY)
+
+      syncEnemyCount()
     } else {
       playExplosionSound()
-      hit.value = true
-      clearTimeout(hitTimeoutId)
-      hitTimeoutId = setTimeout(() => {
-        hit.value = false
+      enemy.hit = true
+      clearTimeout(enemy.hitTimeoutId)
+      enemy.hitTimeoutId = setTimeout(() => {
+        enemy.hit = false
       }, UFO_HIT_FLASH_DURATION)
 
       // Getting shot (but not destroyed) spooks it into an immediate dodge to a new spot.
-      randomizePosition()
+      randomizeEnemy(enemy)
     }
 
     if (score.value > bestScore.value) {
@@ -685,12 +691,13 @@ export default function useSpaceGame () {
     projectile.state = PROJECTILE_STATE.HIT
 
     if (shieldActive.value) {
-      // Shield up: the shot is deflected entirely - no player damage, no UFO heal.
+      // Shield up: the shot is deflected entirely - no player damage, no enemy heal.
       playInterceptSound()
     } else {
-      // Otherwise the player loses a point and the UFO heals one.
+      // Otherwise the player loses a point and the enemy that fired it heals one.
       playerHealth.value = Math.max(0, playerHealth.value - PLAYER_HIT_DAMAGE)
-      ufoHealth.value = Math.min(UFO_MAX_HEALTH, ufoHealth.value + ALIEN_HEAL_AMOUNT)
+      const shooter = enemies.find(e => e.id === projectile.shooterId)
+      if (shooter) shooter.health = Math.min(UFO_MAX_HEALTH, shooter.health + ALIEN_HEAL_AMOUNT)
       playHealSound()
 
       shipHit.value = true
@@ -772,38 +779,28 @@ export default function useSpaceGame () {
     }
   }
 
-  // The UFO's own return shot, unlocked at ALIEN_FIRE_MIN_LEVEL - aims directly at the
-  // ship's current position (no lead/prediction, same simple aim model as the player's
-  // own shots) and travels a bit slower than the player's, so it's dodgeable.
-  const fireAlienShot = () => {
-    if (!ufo.value?.$el || !container.value || !ufoVisible.value) return
-
-    const radians = Math.atan2(shipX - ufoX, shipY - ufoY)
+  // An enemy's own return shot, aimed at the ship's current position (no lead/prediction,
+  // same simple aim model as the player's shots) and a bit slower, so it's dodgeable. Tagged
+  // with shooterId so a landed hit heals the specific enemy that fired it. Scheduling is
+  // driven per-enemy from tick() via each enemy's nextFireAt, so overall fire rate scales
+  // naturally with the number of enemies on the field.
+  const fireEnemyShot = (enemy) => {
+    const cx = enemy.x + enemy.size / 2
+    const cy = enemy.y + enemy.size / 2
+    const radians = Math.atan2(shipX - cx, shipY - cy)
     playAlienLaserSound()
 
     projectiles.push({
       id: nextProjectileId++,
       owner: OWNER.ALIEN,
-      x: ufoX,
-      y: ufoY,
+      shooterId: enemy.id,
+      x: cx,
+      y: cy,
       vx: Math.sin(radians) * ALIEN_PROJECTILE_SPEED,
       vy: Math.cos(radians) * ALIEN_PROJECTILE_SPEED,
       travelled: 0,
       state: PROJECTILE_STATE.FLYING,
     })
-  }
-
-  // Keeps rescheduling regardless of level - only actually fires once level reaches
-  // ALIEN_FIRE_MIN_LEVEL - so return fire kicks in immediately once the player reaches
-  // that level, without needing anything to restart the scheduler.
-  const scheduleAlienFire = () => {
-    const delay = getAlienFireCooldown() * (0.75 + Math.random() * 0.5)
-    alienFireTimeoutId = setTimeout(() => {
-      if (level.value >= ALIEN_FIRE_MIN_LEVEL) {
-        fireAlienShot()
-      }
-      scheduleAlienFire()
-    }, delay)
   }
 
   // Drifts a weapon power-up in from one side of the screen - removed automatically
@@ -843,7 +840,7 @@ export default function useSpaceGame () {
   }
 
   // Keeps rescheduling regardless of level - only actually spawns once level reaches
-  // POWERUP_MIN_LEVEL, same self-starting pattern as scheduleAlienFire().
+  // POWERUP_MIN_LEVEL, so pickups kick in immediately once the player gets there.
   const schedulePowerUpSpawn = () => {
     const delay = POWERUP_SPAWN_INTERVAL_MIN + Math.random() * (POWERUP_SPAWN_INTERVAL_MAX - POWERUP_SPAWN_INTERVAL_MIN)
     powerUpSpawnTimeoutId = setTimeout(() => {
@@ -911,12 +908,21 @@ export default function useSpaceGame () {
   // immediately so the change is felt right away.
   const applyCheatLevel = (targetLevel) => {
     level.value = Math.max(1, Math.floor(targetLevel))
-    ufoHealth.value = UFO_MAX_HEALTH
     playerHealth.value = PLAYER_MAX_HEALTH
-    ufoDestroyed.value = false
-    ufoVisible.value = true
-    clearTimeout(respawnTimeoutId)
-    randomizePosition()
+
+    // Reset every current enemy to full health at the new difficulty, then top the count up
+    // to match the target level's expected number of bad guys.
+    enemies.forEach((enemy) => {
+      clearTimeout(enemy.respawnTimeoutId)
+      clearTimeout(enemy.destroyedTimeoutId)
+      clearTimeout(enemy.hitTimeoutId)
+      enemy.health = UFO_MAX_HEALTH
+      enemy.destroyed = false
+      enemy.visible = true
+      enemy.hit = false
+      randomizeEnemy(enemy)
+    })
+    syncEnemyCount()
   }
 
   const onKeyDown = (event) => {
@@ -962,10 +968,8 @@ export default function useSpaceGame () {
   const moveShip = (event) => {
     dismissHint()
 
-    // ufoClicked (bound directly on the UFO) already fires for this click,
-    // so don't also treat it as a "fly here" click.
-    if (ufo.value?.$el === event.target) return
-
+    // Clicking an enemy uses @click.stop (it fires instead of flying), so this only ever
+    // runs for clicks on empty space.
     const containerOffset = container.value.getBoundingClientRect()
     shipTargetX = event.x
     shipTargetY = event.y - containerOffset.top
@@ -1000,63 +1004,95 @@ export default function useSpaceGame () {
     shipPos.left = shipX + 'px'
     shipPos.top = shipY + 'px'
 
-    // Ease the UFO toward its latest randomized target the same way - continuously
-    // converging every frame means repeated retargeting (continuous flee) blends
-    // smoothly, instead of interrupting a fresh CSS transition mid-flight and causing
-    // a visible velocity jump each time a new hop starts.
-    const ufoDx = ufoTargetX - ufoX
-    const ufoDy = ufoTargetY - ufoY
-    const ufoDistance = Math.hypot(ufoDx, ufoDy)
-    if (ufoDistance > ARRIVE_THRESHOLD) {
-      const ufoFollowT = 1 - Math.exp(-ufoFollowRate * dt)
-      ufoX += ufoDx * ufoFollowT
-      ufoY += ufoDy * ufoFollowT
-    } else {
-      ufoX = ufoTargetX
-      ufoY = ufoTargetY
-    }
-    ufoPos.left = ufoX + 'px'
-    ufoPos.top = ufoY + 'px'
-
-    // Feed the radar minimap: normalise the ship's and UFO's field positions to 0..1
-    // (power-ups get the same treatment in their own loop below, reusing radarW/H).
     const radarW = container.value.offsetWidth
     const radarH = container.value.offsetHeight
     radarShip.x = clamp(shipX / radarW, 0, 1)
     radarShip.y = clamp(shipY / radarH, 0, 1)
-    radarUfo.x = clamp(ufoX / radarW, 0, 1)
-    radarUfo.y = clamp(ufoY / radarH, 0, 1)
 
-    // Advance in-flight projectiles and check each against the right target's live
-    // position - player shots aim at the UFO, the UFO's own return fire aims at the ship.
-    const ufoHitCircle = getUfoHitCircle()
+    // Move, retarget (wander/flee), radar-plot and return-fire each enemy. Same smoothing
+    // as the ship: continuous convergence each frame so repeated retargeting blends smoothly.
+    for (const enemy of enemies) {
+      const edx = enemy.targetX - enemy.x
+      const edy = enemy.targetY - enemy.y
+      if (Math.hypot(edx, edy) > ARRIVE_THRESHOLD) {
+        const t = 1 - Math.exp(-enemy.followRate * dt)
+        enemy.x += edx * t
+        enemy.y += edy * t
+      } else {
+        enemy.x = enemy.targetX
+        enemy.y = enemy.targetY
+      }
+
+      enemy.radarX = clamp((enemy.x + enemy.size / 2) / radarW, 0, 1)
+      enemy.radarY = clamp((enemy.y + enemy.size / 2) / radarH, 0, 1)
+
+      if (!enemy.visible) continue
+
+      const hitCircle = getEnemyHitCircle(enemy)
+
+      // Idle wander on its own timer.
+      if (time >= enemy.nextWanderAt) {
+        enemy.nextWanderAt = time + Math.ceil(Math.random() * ENEMY_WANDER_INTERVAL)
+        randomizeEnemy(enemy)
+      }
+
+      // Flee if the cursor lingers nearby (rate-limited; cooldown/radius scale with level).
+      if (lastPointerX !== null && (time - enemy.lastFleeTime) >= getFleeCooldown()) {
+        const pointerDistance = Math.hypot(lastPointerX - hitCircle.x, lastPointerY - hitCircle.y)
+        if (pointerDistance <= getFleeRadius() + hitCircle.radius) {
+          enemy.lastFleeTime = time
+          randomizeEnemy(enemy)
+        }
+      }
+
+      // Return fire on its own timer, once return fire is unlocked - so overall fire rate
+      // scales with the number of enemies on the field.
+      if (level.value >= ALIEN_FIRE_MIN_LEVEL) {
+        if (enemy.nextFireAt === 0 || time >= enemy.nextFireAt) {
+          if (enemy.nextFireAt !== 0) fireEnemyShot(enemy)
+          enemy.nextFireAt = time + getAlienFireCooldown() * (0.75 + Math.random() * 0.5)
+        }
+      }
+    }
+
+    // Advance in-flight projectiles. Player shots home-in on / collide with the nearest live
+    // enemy; enemy return fire aims at (and collides with) the ship.
+    const enemyCircles = enemies
+      .filter(e => e.visible && e.health > 0)
+      .map(e => ({ enemy: e, circle: getEnemyHitCircle(e) }))
     const shipHitCircle = getShipHitCircle()
+
     for (const projectile of projectiles) {
       if (projectile.state !== PROJECTILE_STATE.FLYING) continue
 
-      // Player shots nudge their heading toward the UFO each frame (turn rate capped so
-      // they curve rather than snap), keeping speed constant. Lasers heat-seek from
-      // anywhere; ordinary shots get a weaker nudge, and only once they're already near
-      // the UFO - a forgiving aim-assist rather than full tracking. Only while a UFO is live.
-      if (projectile.owner === OWNER.PLAYER && ufoHitCircle && ufoVisible.value) {
-        let turnRate = 0
-        if (projectile.laser) {
-          turnRate = LASER_HOMING_TURN_RATE
-        } else {
-          const distToUfo = Math.hypot(ufoHitCircle.x - projectile.x, ufoHitCircle.y - projectile.y)
-          if (distToUfo <= REGULAR_HOMING_RADIUS) turnRate = REGULAR_HOMING_TURN_RATE
+      // Player shots nudge their heading toward the nearest live enemy each frame (turn
+      // rate capped so they curve rather than snap), keeping speed constant. Lasers
+      // heat-seek from anywhere; ordinary shots get a weaker nudge, and only once they're
+      // already near their target - a forgiving aim-assist rather than full tracking.
+      if (projectile.owner === OWNER.PLAYER && enemyCircles.length) {
+        let nearest = null
+        let nearestDist = Infinity
+        for (const { circle } of enemyCircles) {
+          const d = Math.hypot(circle.x - projectile.x, circle.y - projectile.y)
+          if (d < nearestDist) { nearestDist = d; nearest = circle }
         }
-
-        if (turnRate > 0) {
-          const speed = Math.hypot(projectile.vx, projectile.vy)
-          const heading = Math.atan2(projectile.vx, projectile.vy)
-          const desired = Math.atan2(ufoHitCircle.x - projectile.x, ufoHitCircle.y - projectile.y)
-          // Shortest signed angle from heading to desired, wrapped to [-PI, PI].
-          const diff = Math.atan2(Math.sin(desired - heading), Math.cos(desired - heading))
-          const maxTurn = turnRate * dt
-          const newHeading = heading + clamp(diff, -maxTurn, maxTurn)
-          projectile.vx = Math.sin(newHeading) * speed
-          projectile.vy = Math.cos(newHeading) * speed
+        if (nearest) {
+          let turnRate = 0
+          if (projectile.laser) {
+            turnRate = LASER_HOMING_TURN_RATE
+          } else if (nearestDist <= REGULAR_HOMING_RADIUS) {
+            turnRate = REGULAR_HOMING_TURN_RATE
+          }
+          if (turnRate > 0) {
+            const speed = Math.hypot(projectile.vx, projectile.vy)
+            const heading = Math.atan2(projectile.vx, projectile.vy)
+            const desired = Math.atan2(nearest.x - projectile.x, nearest.y - projectile.y)
+            // Shortest signed angle from heading to desired, wrapped to [-PI, PI].
+            const diff = Math.atan2(Math.sin(desired - heading), Math.cos(desired - heading))
+            const newHeading = heading + clamp(diff, -turnRate * dt, turnRate * dt)
+            projectile.vx = Math.sin(newHeading) * speed
+            projectile.vy = Math.cos(newHeading) * speed
+          }
         }
       }
 
@@ -1066,18 +1102,26 @@ export default function useSpaceGame () {
       projectile.y += stepY
       projectile.travelled += Math.hypot(stepX, stepY)
 
-      const targetCircle = projectile.owner === OWNER.ALIEN ? shipHitCircle : ufoHitCircle
-      if (targetCircle) {
-        const effectiveRadius = targetCircle.radius + (projectile.hitPaddingBonus || 0)
-        const hitDistance = Math.hypot(projectile.x - targetCircle.x, projectile.y - targetCircle.y)
-        if (hitDistance <= effectiveRadius) {
-          if (projectile.owner === OWNER.ALIEN) {
+      if (projectile.owner === OWNER.ALIEN) {
+        if (shipHitCircle) {
+          const effectiveRadius = shipHitCircle.radius + (projectile.hitPaddingBonus || 0)
+          if (Math.hypot(projectile.x - shipHitCircle.x, projectile.y - shipHitCircle.y) <= effectiveRadius) {
             registerAlienHit(projectile)
-          } else {
-            registerHit(projectile)
+            continue
           }
-          continue
         }
+      } else {
+        let struck = false
+        for (const { enemy, circle } of enemyCircles) {
+          if (!enemy.visible || enemy.health <= 0) continue // already killed earlier this frame
+          const effectiveRadius = circle.radius + (projectile.hitPaddingBonus || 0)
+          if (Math.hypot(projectile.x - circle.x, projectile.y - circle.y) <= effectiveRadius) {
+            damageEnemy(enemy, projectile)
+            struck = true
+            break
+          }
+        }
+        if (struck) continue
       }
 
       if (projectile.travelled >= PROJECTILE_MAX_DISTANCE) {
@@ -1139,62 +1183,40 @@ export default function useSpaceGame () {
       if (shieldRemainingMs.value <= 0) shieldActive.value = false
     }
 
-    // Smarter UFO AI: keep evading for as long as the cursor lingers nearby, instead of
-    // only reacting once on mouseenter. Rate-limited so it doesn't teleport every frame -
-    // both the cooldown and detection radius scale with level (its "reaction time").
-    if (ufoHitCircle && lastPointerX !== null && (time - lastFleeTime) >= getFleeCooldown()) {
-      const pointerDistance = Math.hypot(lastPointerX - ufoHitCircle.x, lastPointerY - ufoHitCircle.y)
-      if (pointerDistance <= getFleeRadius() + ufoHitCircle.radius) {
-        lastFleeTime = time
-        randomizePosition()
-      }
-    }
-
     rafId = requestAnimationFrame(tick)
   }
 
+  syncEnemyCount()
   rafId = requestAnimationFrame(tick)
-  scheduleAlienFire()
   schedulePowerUpSpawn()
 
-  const scheduleUfoMovement = () => {
-    animationTimeoutId = setTimeout(() => {
-      randomizePosition()
-      scheduleUfoMovement()
-    }, Math.ceil(Math.random() * 10000))
-  }
-
   onUnmounted(() => {
-    clearTimeout(animationTimeoutId)
-    clearTimeout(hitTimeoutId)
     clearTimeout(scorePulseTimeoutId)
     clearTimeout(warpSettleTimeoutId)
-    clearTimeout(ufoDestroyedTimeoutId)
-    clearTimeout(respawnTimeoutId)
     clearTimeout(shipHitTimeoutId)
-    clearTimeout(alienFireTimeoutId)
     clearTimeout(powerUpSpawnTimeoutId)
+    enemies.forEach((enemy) => {
+      clearTimeout(enemy.hitTimeoutId)
+      clearTimeout(enemy.destroyedTimeoutId)
+      clearTimeout(enemy.respawnTimeoutId)
+    })
     if (rafId) cancelAnimationFrame(rafId)
   })
 
   return {
     container,
     ship,
-    ufo,
     score,
     bestScore,
-    hit,
     shipHit,
     scorePulse,
     hintVisible,
     muted,
     toggleMute,
     level,
-    ufoHealth,
-    ufoHealthRatio,
-    ufoHealthColor,
-    ufoDestroyed,
-    ufoVisible,
+    enemies,
+    enemyHealthRatio,
+    healthColor,
     projectiles,
     warpFlashes,
     powerUps,
@@ -1204,14 +1226,10 @@ export default function useSpaceGame () {
     playerHealthRatio,
     playerHealthColor,
     radarShip,
-    radarUfo,
     shipPos,
-    ufoPos,
-    randomizePosition,
     rotateShip,
     moveShip,
     onKeyDown,
     ufoClicked,
-    scheduleUfoMovement,
   }
 }

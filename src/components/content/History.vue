@@ -32,7 +32,7 @@
           <div class="radar-sweep"></div>
           <div class="radar-ring"></div>
           <div class="radar-blip radar-blip--me" :style="{left: (radarShip.x * 100) + '%', top: (radarShip.y * 100) + '%'}"></div>
-          <div v-show="ufoVisible" class="radar-blip radar-blip--enemy" :style="{left: (radarUfo.x * 100) + '%', top: (radarUfo.y * 100) + '%'}"></div>
+          <div v-for="enemy in enemies" :key="'radar-e-' + enemy.id" v-show="enemy.visible" class="radar-blip radar-blip--enemy" :style="{left: (enemy.radarX * 100) + '%', top: (enemy.radarY * 100) + '%'}"></div>
           <div v-for="p in powerUps" :key="'radar-' + p.id" v-show="p.state === POWERUP_STATE.FLOATING" class="radar-blip radar-blip--bonus" :style="{left: (p.radarX * 100) + '%', top: (p.radarY * 100) + '%'}"></div>
         </div>
       </div>
@@ -52,17 +52,18 @@
         {{ powerUp.label }}
       </div>
 
-      <SvgUFO
-          v-show="ufoVisible"
-          ref="ufo"
-          @click="ufoClicked"
-          :style="ufoPos"
-          :class="{'bg-red-600 rounded-full': hit, 'ufo-destroyed': ufoDestroyed}"
-          class="absolute select-none hidden lg:block h-10 w-10 wobble transition-all cursor-crosshair"
-      />
-      <div v-show="ufoVisible" class="ufo-health-track" :style="{top: ufoPos.top, left: ufoPos.left, width: (parseFloat(ufoPos.width) * 0.8) + 'px', filter: ufoPos.filter, 'transition-duration': ufoPos['transition-duration']}">
-        <div class="ufo-health-fill" :style="{width: (ufoHealthRatio * 100) + '%', backgroundColor: ufoHealthColor}"></div>
-      </div>
+      <template v-for="enemy in enemies" :key="enemy.id">
+        <SvgUFO
+            v-show="enemy.visible"
+            @click.stop="ufoClicked"
+            :style="{top: enemy.y + 'px', left: enemy.x + 'px', width: enemy.size + 'px', height: enemy.size + 'px', filter: 'brightness(' + enemy.brightness + '%)', zIndex: enemy.zIndex, transitionProperty: 'width, height, filter', transitionDuration: enemy.transitionDuration}"
+            :class="{'bg-red-600 rounded-full': enemy.hit, 'ufo-destroyed': enemy.destroyed}"
+            class="absolute select-none hidden lg:block wobble cursor-crosshair"
+        />
+        <div v-show="enemy.visible" class="ufo-health-track" :style="{top: enemy.y + 'px', left: enemy.x + 'px', width: (enemy.size * 0.8) + 'px', filter: 'brightness(' + enemy.brightness + '%)', 'transition-duration': enemy.transitionDuration}">
+          <div class="ufo-health-fill" :style="{width: (enemyHealthRatio(enemy) * 100) + '%', backgroundColor: healthColor(enemyHealthRatio(enemy))}"></div>
+        </div>
+      </template>
 
     </div>
     <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500">
@@ -108,20 +109,17 @@ export default {
     const {
       container,
       ship,
-      ufo,
       score,
       bestScore,
-      hit,
       shipHit,
       scorePulse,
       hintVisible,
       muted,
       toggleMute,
       level,
-      ufoHealthRatio,
-      ufoHealthColor,
-      ufoDestroyed,
-      ufoVisible,
+      enemies,
+      enemyHealthRatio,
+      healthColor,
       projectiles,
       warpFlashes,
       powerUps,
@@ -130,19 +128,12 @@ export default {
       playerHealthRatio,
       playerHealthColor,
       radarShip,
-      radarUfo,
       shipPos,
-      ufoPos,
       rotateShip,
       moveShip,
       onKeyDown,
       ufoClicked,
-      scheduleUfoMovement,
     } = useSpaceGame()
-
-    if (!isMobileOnly) {
-      scheduleUfoMovement()
-    }
 
     // Bound on window (rather than just the small game overlay) so a Space press still
     // reaches the game - and gets its default page-scroll prevented - no matter what
@@ -173,16 +164,14 @@ export default {
       moveShip,
       shipPos,
       ship,
-      ufo,
       score,
       bestScore,
       muted,
       toggleMute,
       level,
-      ufoHealthRatio,
-      ufoHealthColor,
-      ufoDestroyed,
-      ufoVisible,
+      enemies,
+      enemyHealthRatio,
+      healthColor,
       projectiles,
       warpFlashes,
       powerUps,
@@ -191,13 +180,10 @@ export default {
       playerHealthRatio,
       playerHealthColor,
       radarShip,
-      radarUfo,
-      hit,
       shipHit,
       scorePulse,
       hintVisible,
       container,
-      ufoPos,
       mode,
       isMobileOnly,
       POWERUP_STATE,
