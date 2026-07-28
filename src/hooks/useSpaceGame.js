@@ -15,7 +15,7 @@ const HIT_ANIM_DURATION = 260       // how long a projectile's "hit" burst plays
 const MISS_ANIM_DURATION = 160      // how long a projectile's fade-out plays before removal
 
 const WARP_STRETCH = 1.7            // peak squash-and-stretch factor when a "fly here" click lands
-const WARP_SETTLE_DURATION = 300    // ms for the stretch to ease back to normal
+const WARP_SETTLE_RATE = 10         // exp-decay rate for the warp stretch to settle back (~300ms)
 const WARP_FLASH_FADE_DURATION = 380 // ms for the departure-point light burst to fade out
 
 const UFO_MAX_HEALTH = 10           // hits to destroy the UFO and advance a level
@@ -129,14 +129,6 @@ const POWERUP_TYPES = {
   ally: { minLevel: ALLY_MIN_LEVEL, category: POWERUP_CATEGORY.ALLY, label: 'NCC', color: '#a5b4fc', weight: 0.4, duration: ALLY_DURATION },
 }
 
-// CSS property names written into the reactive ship style object (shipPos). Defined once
-// here rather than retyping the literal at each assignment.
-const CSS = {
-  transitionProperty: 'transition-property',
-  transitionDuration: 'transition-duration',
-  animationDuration: 'animation-duration',
-  zIndex: 'z-index',
-}
 
 // localStorage keys (via useLocalStore).
 const STORE = {
@@ -175,7 +167,6 @@ export const GAME_STATE = {
 
 export default function useSpaceGame (isActive) {
   const container = ref(null)
-  const ship = ref(null)
 
   const score = ref(0)
   const bestScore = ref(0)
@@ -239,7 +230,6 @@ export default function useSpaceGame (isActive) {
 
   const warpFlashes = reactive([])
   let nextWarpFlashId = 0
-  let warpSettleTimeoutId = null
 
   const powerUps = reactive([])
   let nextPowerUpId = 0
@@ -317,15 +307,6 @@ export default function useSpaceGame (isActive) {
   const shipHit = ref(false) // brief flash when the alien's return fire connects
   let shipHitTimeoutId = null
 
-  // Rendered ship style - top/left are driven every animation frame by the numeric
-  // position below; only the rotation transform gets a CSS transition (for smoothing
-  // between the discrete mousemove samples that drive rotateShip).
-  const shipPos = reactive({
-    top: '0px',
-    left: '0px',
-    [CSS.transitionProperty]: 'transform',
-    [CSS.transitionDuration]: '0.1s',
-  })
 
   // Numeric ship position/target driving the per-frame movement loop. World space:
   // container pixels, origin at the container's top-left, +x right, +y down (see
@@ -651,15 +632,6 @@ export default function useSpaceGame (isActive) {
     radius: enemy.size / 2 + PROJECTILE_HIT_PADDING,
   })
 
-  // Combines the ship's current facing angle with its current warp-stretch factor into
-  // a single transform - kept in one place so rotateShip and the warp effect (which run
-  // independently of each other) never stomp on each other's half of the transform string.
-  // The 1/shipStretch on the perpendicular axis keeps the "volume" roughly constant
-  // (classic squash-and-stretch), so a taller ship also looks a touch narrower.
-  const applyShipTransform = () => {
-    shipPos.transform = `rotate(${shipAngle.value}deg) scale(${1 / shipStretch}, ${shipStretch})`
-  }
-
   // --- Coordinate bridge -----------------------------------------------------
   // Single source of truth for turning a pointer event into world coordinates.
   // World space = container pixels: origin at the container's top-left, +x right,
@@ -694,7 +666,6 @@ export default function useSpaceGame (isActive) {
 
     shipAngle.value = degree
     hasFacing = true
-    applyShipTransform()
   }
 
   const spawnWarpFlash = (x, y) => {
@@ -714,30 +685,13 @@ export default function useSpaceGame (isActive) {
     }, WARP_FLASH_FADE_DURATION + 20)
   }
 
-  // Purely a visual flourish for a "fly here" click - stretches the ship along its
-  // facing axis then eases back to normal, plus a light burst at the departure point.
-  // Doesn't touch shipX/Y/target at all, so it can't affect actual movement.
+  // Purely a visual flourish for a "fly here" click - snaps the ship into a stretched pose
+  // that the render loop then eases back to neutral (see the shipStretch settle in tick),
+  // plus a light burst at the departure point. Doesn't touch shipX/Y/target, so it can't
+  // affect actual movement.
   const triggerWarpEffect = () => {
     spawnWarpFlash(shipX, shipY)
-
-    // Snap to the stretched pose instantly (no transition), then let a transition ease
-    // it back to normal - a quick "warp stretch" pop rather than a gradual stretch.
-    shipPos[CSS.transitionDuration] = '0s'
     shipStretch = WARP_STRETCH
-    applyShipTransform()
-
-    requestAnimationFrame(() => {
-      shipPos[CSS.transitionDuration] = `${WARP_SETTLE_DURATION}ms`
-      shipStretch = 1
-      applyShipTransform()
-    })
-
-    // Rotation normally responds within 0.1s; restore that after the warp settles so
-    // the brief slower transition here doesn't linger and make aiming feel sluggish.
-    clearTimeout(warpSettleTimeoutId)
-    warpSettleTimeoutId = setTimeout(() => {
-      shipPos[CSS.transitionDuration] = '0.1s'
-    }, WARP_SETTLE_DURATION + 20)
   }
 
   // The player's own ship hit circle, computed straight from its JS-tracked position and
@@ -1285,8 +1239,12 @@ export default function useSpaceGame (isActive) {
       shipX = shipTargetX
       shipY = shipTargetY
     }
-    shipPos.left = shipX + 'px'
-    shipPos.top = shipY + 'px'
+    // Warp squash-and-stretch eases back to neutral here (the renderer reads shipStretch
+    // directly each frame), replacing the old CSS-transition-driven settle.
+    if (shipStretch !== 1) {
+      shipStretch = 1 + (shipStretch - 1) * Math.exp(-WARP_SETTLE_RATE * dt)
+      if (Math.abs(shipStretch - 1) < 0.01) shipStretch = 1
+    }
 
     const radarW = container.value.offsetWidth
     const radarH = container.value.offsetHeight
@@ -1530,7 +1488,6 @@ export default function useSpaceGame (isActive) {
 
   const clearAllTimers = () => {
     clearTimeout(scorePulseTimeoutId)
-    clearTimeout(warpSettleTimeoutId)
     clearTimeout(shipHitTimeoutId)
     clearTimeout(powerUpSpawnTimeoutId)
     clearTimeout(allyPhaseTimeoutId)
@@ -1582,9 +1539,6 @@ export default function useSpaceGame (isActive) {
     lastPointerY = null
     lastFireTime = 0
     lastFrameTime = null
-    shipPos.left = '0px'
-    shipPos.top = '0px'
-    applyShipTransform()
   }
 
   // Sets up a fresh game (state + enemies + spawn timer) WITHOUT touching the rAF loop, so
@@ -1645,7 +1599,6 @@ export default function useSpaceGame (isActive) {
 
   return {
     container,
-    ship,
     score,
     bestScore,
     shipHit,
@@ -1674,7 +1627,6 @@ export default function useSpaceGame (isActive) {
     continueGame,
     restartGame,
     radarShip,
-    shipPos,
     rotateShip,
     moveShip,
     handleClick,

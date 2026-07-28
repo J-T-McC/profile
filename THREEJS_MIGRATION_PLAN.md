@@ -225,6 +225,36 @@ cross-browser + fullscreen pass, final visual QA against the current game.
 - Deliverable: dead code removed, stable 60fps, clean build/lint.
 - **Token estimate: ~55k**
 
+**Status: ✅ DONE.**
+
+- Dead scoped CSS removed from `History.vue` (`.ship*`, `.ally*`, `.phaser-beam*`,
+  `.ufo-destroyed*`, `.power-up*`, `.stars`, `.twinkling`, and their keyframes).
+  CSS bundle 40.56 → 36.11 kB (8.26 → 7.30 kB gzip).
+- Deleted the now-unused SVG components: `SvgUFO.vue`, `SvgWeapon.vue`,
+  `SvgEnterprise.vue`.
+- Removed the dead hook machinery: the `ship` ref, the whole `shipPos` reactive +
+  `applyShipTransform` + `CSS` prop-name map + `warpSettleTimeoutId`.
+- **Warp squash-stretch parity fix:** it relied on a CSS transition to ease
+  `shipStretch` back, so in the canvas it collapsed to a 1-frame blip. Now the game
+  tick eases `shipStretch` back to 1 (framerate-independent exp decay), so the
+  renderer shows the real pop.
+- **Perf — lazy-load three:** `useThreeStage` now `await import('three')` inside
+  `start()` (guarded against the alien-mode toggle race), so three's bundle only
+  loads when alien mode is entered. **Initial JS 710 → 202 kB (gzip 205 → 77 kB)**;
+  three is a separate on-demand chunk; the chunk-size warning is gone. DPR is capped
+  and all GPU resources are disposed on teardown (Phases 0/5).
+- Remaining (needs a browser): cross-browser + fullscreen final visual pass.
+
+---
+
+## Migration complete
+
+All 7 phases (0–6) are done. The spaceship game renders entirely in Three.js
+(orthographic sprite port), the ~1,600-line game logic in `useSpaceGame.js` stayed
+renderer-agnostic, DOM overlays (HUD/radar/health bars/arcade modals) sit above the
+canvas, and the build is on Vite. Outstanding items are visual QA passes that need a
+real browser (listed per phase above).
+
 ---
 
 ## Summary

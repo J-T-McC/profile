@@ -325,26 +325,6 @@ export default {
 </script>
 
 <style scoped>
-.ship {
-  background: transparent;
-  /* Declared on the base class (not just .ship-hit) so the filter transitions smoothly
-     both into and back out of the hit flash, rather than just snapping back instantly. */
-  transition: filter 0.15s ease-out;
-}
-
-.ship-hit {
-  filter: brightness(1.8) drop-shadow(0 0 10px #4ade80) drop-shadow(0 0 20px #22c55e);
-}
-
-@keyframes move-twink-back {
-  from {
-    background-position: 0 0;
-  }
-  to {
-    background-position: -10000px 5000px;
-  }
-}
-
 @keyframes pulse {
   from {
     transform: scale3d(1, 1, 1);
@@ -380,93 +360,6 @@ export default {
 
 #about:fullscreen .game-hud {
   top: 0.75rem;
-}
-
-/* Temporary AI ally. The outer .ally element owns the screen position and the warp
-   animation (scale/opacity), while the inner .ally-body owns the heading rotation - kept
-   on separate elements so the CSS warp animation and the JS-driven rotate transform never
-   fight over a single transform. Durations here must match ALLY_WARP_*_DURATION. */
-.ally {
-  position: absolute;
-  z-index: 17;
-  pointer-events: none;
-  filter: drop-shadow(0 0 5px rgba(165, 180, 252, 0.65));
-}
-
-.ally-body {
-  width: 100%;
-  height: 100%;
-}
-
-/* Ally phaser beam overlay - covers the whole play area; the line coords are container
-   pixels. A quick zap-in then fade, matching ALLY_BEAM_DURATION (0.22s). */
-.phaser-beam {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 18;
-  pointer-events: none;
-  overflow: visible;
-}
-
-.phaser-beam-line {
-  stroke: #fdba74;
-  stroke-width: 3.5;
-  stroke-linecap: round;
-  filter: drop-shadow(0 0 4px #fb923c) drop-shadow(0 0 8px rgba(249, 115, 22, 0.8));
-  animation: phaser-beam-zap 0.22s ease-out forwards;
-}
-
-@keyframes phaser-beam-zap {
-  0% {
-    opacity: 0.2;
-    stroke-width: 6;
-  }
-  25% {
-    opacity: 1;
-    stroke-width: 4;
-  }
-  100% {
-    opacity: 0;
-    stroke-width: 2;
-  }
-}
-
-.ally--warp-in {
-  animation: ally-warp-in 0.7s ease-out;
-}
-
-.ally--warp-out {
-  animation: ally-warp-out 0.7s ease-in forwards;
-}
-
-@keyframes ally-warp-in {
-  0% {
-    transform: scaleX(0.08) scaleY(2.6);
-    opacity: 0;
-    filter: brightness(3) drop-shadow(0 0 14px #a5b4fc);
-  }
-  55% {
-    opacity: 1;
-  }
-  100% {
-    transform: scaleX(1) scaleY(1);
-    opacity: 1;
-  }
-}
-
-@keyframes ally-warp-out {
-  0% {
-    transform: scaleX(1) scaleY(1);
-    opacity: 1;
-  }
-  100% {
-    transform: scaleX(0.08) scaleY(2.6);
-    opacity: 0;
-    filter: brightness(3) drop-shadow(0 0 14px #a5b4fc);
-  }
 }
 
 /* 8-bit ship death burst: layered square rings that punch outward in choppy steps. */
@@ -645,71 +538,6 @@ export default {
   transition: width 0.2s ease-out, background-color 0.2s ease-out;
 }
 
-/* Cyan aura while a shield buff is active, layered on top of the ship's own transition. */
-.ship-shielded {
-  filter: drop-shadow(0 0 6px #22d3ee) drop-shadow(0 0 12px #06b6d4);
-}
-
-.ufo-destroyed {
-  background: #fde047 !important;
-  border-radius: 9999px;
-  box-shadow: 0 0 24px 10px rgba(250, 204, 21, 0.85);
-  animation: ufo-destroyed-pulse 1.2s ease-out;
-}
-
-@keyframes ufo-destroyed-pulse {
-  0% {
-    transform: scale(1);
-  }
-  15% {
-    transform: scale(1.7);
-  }
-  35% {
-    transform: scale(1.1);
-  }
-  55% {
-    transform: scale(1.5);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-.power-up {
-  position: absolute;
-  z-index: 19;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 30px;
-  height: 30px;
-  padding: 0 6px;
-  border: 2px solid currentColor;
-  border-radius: 9999px;
-  background: rgba(0, 0, 0, 0.55);
-  font-size: 15px;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  animation: power-up-idle 1.6s ease-in-out infinite;
-}
-
-@keyframes power-up-idle {
-  0%, 100% {
-    transform: translate(-50%, -50%) scale(1);
-  }
-  50% {
-    transform: translate(-50%, -50%) scale(1.12);
-  }
-}
-
-.power-up--collected {
-  animation: none;
-  transition: transform 0.3s ease-out, opacity 0.3s ease-out;
-  transform: translate(-50%, -50%) scale(2.2);
-  opacity: 0;
-}
-
 .buff-badge {
   display: flex;
   align-items: center;
@@ -807,20 +635,4 @@ export default {
   }
 }
 
-.stars {
-  background: black url(https://res.cloudinary.com/ddaji66m6/image/upload/v1611800904/portfolio/stars_vcimcd.png) repeat top center;
-  z-index: 0;
-}
-
-.twinkling {
-  background: transparent url(https://res.cloudinary.com/ddaji66m6/image/upload/v1611800910/portfolio/twinkling_qmxcrl.png) repeat top center;
-  opacity: 0.6;
-  z-index: 1;
-
-  -moz-animation: move-twink-back 300s linear infinite;
-  -ms-animation: move-twink-back 300s linear infinite;
-  -o-animation: move-twink-back 300s linear infinite;
-  -webkit-animation: move-twink-back 300s linear infinite;
-  animation: move-twink-back 300s linear infinite;
-}
 </style>

@@ -1,5 +1,4 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
-import * as THREE from 'three'
 import { POWERUP_STATE } from '@/hooks/useSpaceGame'
 import ufoUrl from '@/assets/ufo.svg'
 import enterpriseUrl from '@/assets/enterprise.svg'
@@ -83,6 +82,9 @@ const sampleKeyframes = (frames, p) => {
 export default function useThreeStage (active, game) {
   const stageCanvas = ref(null)
 
+  // three is loaded lazily (dynamic import in start) so its bundle only ships once
+  // alien mode is actually entered.
+  let THREE = null
   let renderer = null
   let scene = null
   let camera = null
@@ -541,9 +543,14 @@ export default function useThreeStage (active, game) {
 
   // --- Lifecycle -------------------------------------------------------------
 
-  const start = () => {
+  const start = async () => {
     const canvas = stageCanvas.value
     if (!canvas || renderer) return
+
+    // Lazy-load three (~205 KB gzip) so it only ships when alien mode is entered.
+    THREE = await import('three')
+    // Bail if we were torn down - or another start already ran - while importing.
+    if (renderer || !active.value || stageCanvas.value !== canvas) return
 
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
     scene = new THREE.Scene()
