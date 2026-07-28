@@ -79,6 +79,43 @@ const POWERUP_TYPES = {
   laser: { minLevel: 8, label: 'L', color: '#34d399', laser: true },
 }
 
+// CSS property names written into the reactive style objects (shipPos/ufoPos). Defined
+// once here rather than retyping the literal at each assignment - the resolved values are
+// identical to before, so template code reading e.g. ufoPos['transition-duration'] still works.
+const CSS = {
+  transitionProperty: 'transition-property',
+  transitionDuration: 'transition-duration',
+  animationDuration: 'animation-duration',
+  zIndex: 'z-index',
+}
+
+// localStorage keys (via useLocalStore).
+const STORE = {
+  NAMESPACE: 'spaceGame',
+  BEST_SCORE: 'bestScore',
+  MUTED: 'muted',
+}
+
+// Projectile owner + lifecycle-state values, and power-up lifecycle-state values. Exported
+// because History.vue's template compares against them too (and SvgWeapon derives its CSS
+// class names from owner/state), so both sides share one definition.
+export const OWNER = {
+  PLAYER: 'player',
+  ALIEN: 'alien',
+}
+
+export const PROJECTILE_STATE = {
+  FLYING: 'flying',
+  HIT: 'hit',
+  MISS: 'miss',
+  INTERCEPTED: 'intercepted',
+}
+
+export const POWERUP_STATE = {
+  FLOATING: 'floating',
+  COLLECTED: 'collected',
+}
+
 export default function useSpaceGame () {
   const container = ref(null)
   const ship = ref(null)
@@ -125,13 +162,13 @@ export default function useSpaceGame () {
     return '#f87171' // red
   })
 
-  const highScoreStore = useLocalStore('spaceGame')
-  bestScore.value = highScoreStore.get('bestScore', 0)
+  const highScoreStore = useLocalStore(STORE.NAMESPACE)
+  bestScore.value = highScoreStore.get(STORE.BEST_SCORE, 0)
 
-  const muted = ref(highScoreStore.get('muted', false))
+  const muted = ref(highScoreStore.get(STORE.MUTED, false))
   const toggleMute = () => {
     muted.value = !muted.value
-    highScoreStore.set('muted', muted.value)
+    highScoreStore.set(STORE.MUTED, muted.value)
   }
 
   const projectiles = reactive([])
@@ -173,8 +210,8 @@ export default function useSpaceGame () {
   const shipPos = reactive({
     top: '0px',
     left: '0px',
-    'transition-property': 'transform',
-    'transition-duration': '0.1s',
+    [CSS.transitionProperty]: 'transform',
+    [CSS.transitionDuration]: '0.1s',
   })
 
   // Numeric ship position/target driving the per-frame movement loop. Coordinate
@@ -191,7 +228,7 @@ export default function useSpaceGame () {
   const ufoPos = reactive({
     top: '-1000px',
     left: '-1000px',
-    'transition-property': 'width, height, filter',
+    [CSS.transitionProperty]: 'width, height, filter',
   })
 
   // Numeric UFO position/target/speed driving the per-frame movement loop, same
@@ -400,11 +437,11 @@ export default function useSpaceGame () {
 
     // Position now glides continuously in tick() (see ufoFollowRate) rather than via a
     // fresh CSS transition per hop - only the size/depth-illusion morph still uses one.
-    ufoPos['animation-duration'] = duration
-    ufoPos['transition-duration'] = duration
+    ufoPos[CSS.animationDuration] = duration
+    ufoPos[CSS.transitionDuration] = duration
     ufoPos.height = `${size}px`
     ufoPos.width = `${size}px`
-    ufoPos['z-index'] = size >= (UFO_MAX_SIZE * zIndexThreshold) ? 12 : 1
+    ufoPos[CSS.zIndex] = size >= (UFO_MAX_SIZE * zIndexThreshold) ? 12 : 1
     ufoPos.filter = `brightness(${brightness}%)`
 
     // Roughly match the pace of the old CSS-transition hops (which fully arrived in
@@ -474,12 +511,12 @@ export default function useSpaceGame () {
 
     // Snap to the stretched pose instantly (no transition), then let a transition ease
     // it back to normal - a quick "warp stretch" pop rather than a gradual stretch.
-    shipPos['transition-duration'] = '0s'
+    shipPos[CSS.transitionDuration] = '0s'
     shipStretch = WARP_STRETCH
     applyShipTransform()
 
     requestAnimationFrame(() => {
-      shipPos['transition-duration'] = `${WARP_SETTLE_DURATION}ms`
+      shipPos[CSS.transitionDuration] = `${WARP_SETTLE_DURATION}ms`
       shipStretch = 1
       applyShipTransform()
     })
@@ -488,7 +525,7 @@ export default function useSpaceGame () {
     // the brief slower transition here doesn't linger and make aiming feel sluggish.
     clearTimeout(warpSettleTimeoutId)
     warpSettleTimeoutId = setTimeout(() => {
-      shipPos['transition-duration'] = '0.1s'
+      shipPos[CSS.transitionDuration] = '0.1s'
     }, WARP_SETTLE_DURATION + 20)
   }
 
@@ -521,7 +558,7 @@ export default function useSpaceGame () {
   }
 
   const registerHit = (projectile) => {
-    projectile.state = 'hit'
+    projectile.state = PROJECTILE_STATE.HIT
     score.value++
     scorePulse.value = true
 
@@ -562,7 +599,7 @@ export default function useSpaceGame () {
 
     if (score.value > bestScore.value) {
       bestScore.value = score.value
-      highScoreStore.set('bestScore', bestScore.value)
+      highScoreStore.set(STORE.BEST_SCORE, bestScore.value)
     }
 
     clearTimeout(scorePulseTimeoutId)
@@ -577,7 +614,7 @@ export default function useSpaceGame () {
   }
 
   const registerMiss = (projectile) => {
-    projectile.state = 'miss'
+    projectile.state = PROJECTILE_STATE.MISS
     setTimeout(() => {
       const index = projectiles.indexOf(projectile)
       if (index !== -1) projectiles.splice(index, 1)
@@ -587,7 +624,7 @@ export default function useSpaceGame () {
   // The UFO's return fire connecting - instead of costing the player anything (there's
   // no player health), it heals the UFO back up, capped at full health.
   const registerAlienHit = (projectile) => {
-    projectile.state = 'hit'
+    projectile.state = PROJECTILE_STATE.HIT
     ufoHealth.value = Math.min(UFO_MAX_HEALTH, ufoHealth.value + ALIEN_HEAL_AMOUNT)
     playHealSound()
 
@@ -606,8 +643,8 @@ export default function useSpaceGame () {
   // A player shot getting close enough to an in-flight alien shot destroys both -
   // lets the player shoot down incoming fire before it reaches (and heals) the UFO.
   const registerIntercept = (alienShot, playerShot) => {
-    alienShot.state = 'intercepted'
-    playerShot.state = 'intercepted'
+    alienShot.state = PROJECTILE_STATE.INTERCEPTED
+    playerShot.state = PROJECTILE_STATE.INTERCEPTED
     playInterceptSound()
 
     setTimeout(() => {
@@ -647,13 +684,13 @@ export default function useSpaceGame () {
       const radians = directionRadians + angleOffset
       projectiles.push({
         id: nextProjectileId++,
-        owner: 'player',
+        owner: OWNER.PLAYER,
         x: originX,
         y: originY,
         vx: Math.sin(radians) * speed,
         vy: Math.cos(radians) * speed,
         travelled: 0,
-        state: 'flying',
+        state: PROJECTILE_STATE.FLYING,
         hitPaddingBonus,
         laser: isLaser,
         damage: isLaser ? LASER_DAMAGE : 1,
@@ -680,13 +717,13 @@ export default function useSpaceGame () {
 
     projectiles.push({
       id: nextProjectileId++,
-      owner: 'alien',
+      owner: OWNER.ALIEN,
       x: ufoX,
       y: ufoY,
       vx: Math.sin(radians) * ALIEN_PROJECTILE_SPEED,
       vy: Math.cos(radians) * ALIEN_PROJECTILE_SPEED,
       travelled: 0,
-      state: 'flying',
+      state: PROJECTILE_STATE.FLYING,
     })
   }
 
@@ -726,14 +763,14 @@ export default function useSpaceGame () {
       y: 0,
       vx: (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED,
       spawnTime: null,
-      state: 'floating',
+      state: POWERUP_STATE.FLOATING,
       radarX: 0.5,
       radarY: 0.5,
     })
 
     setTimeout(() => {
       const index = powerUps.findIndex(p => p.id === id)
-      if (index !== -1 && powerUps[index].state === 'floating') {
+      if (index !== -1 && powerUps[index].state === POWERUP_STATE.FLOATING) {
         powerUps.splice(index, 1)
       }
     }, POWERUP_LIFESPAN)
@@ -766,7 +803,7 @@ export default function useSpaceGame () {
   // Flying into a power-up immediately grants its buff, replacing/refreshing whatever
   // (if anything) was already active - only one weapon buff is active at a time.
   const collectPowerUp = (powerUp) => {
-    powerUp.state = 'collected'
+    powerUp.state = POWERUP_STATE.COLLECTED
     activateBuff(powerUp.type)
 
     setTimeout(() => {
@@ -913,13 +950,13 @@ export default function useSpaceGame () {
     const ufoHitCircle = getUfoHitCircle()
     const shipHitCircle = getShipHitCircle()
     for (const projectile of projectiles) {
-      if (projectile.state !== 'flying') continue
+      if (projectile.state !== PROJECTILE_STATE.FLYING) continue
 
       // Player shots nudge their heading toward the UFO each frame (turn rate capped so
       // they curve rather than snap), keeping speed constant. Lasers heat-seek from
       // anywhere; ordinary shots get a weaker nudge, and only once they're already near
       // the UFO - a forgiving aim-assist rather than full tracking. Only while a UFO is live.
-      if (projectile.owner === 'player' && ufoHitCircle && ufoVisible.value) {
+      if (projectile.owner === OWNER.PLAYER && ufoHitCircle && ufoVisible.value) {
         let turnRate = 0
         if (projectile.laser) {
           turnRate = LASER_HOMING_TURN_RATE
@@ -947,12 +984,12 @@ export default function useSpaceGame () {
       projectile.y += stepY
       projectile.travelled += Math.hypot(stepX, stepY)
 
-      const targetCircle = projectile.owner === 'alien' ? shipHitCircle : ufoHitCircle
+      const targetCircle = projectile.owner === OWNER.ALIEN ? shipHitCircle : ufoHitCircle
       if (targetCircle) {
         const effectiveRadius = targetCircle.radius + (projectile.hitPaddingBonus || 0)
         const hitDistance = Math.hypot(projectile.x - targetCircle.x, projectile.y - targetCircle.y)
         if (hitDistance <= effectiveRadius) {
-          if (projectile.owner === 'alien') {
+          if (projectile.owner === OWNER.ALIEN) {
             registerAlienHit(projectile)
           } else {
             registerHit(projectile)
@@ -969,12 +1006,12 @@ export default function useSpaceGame () {
     // Let the player shoot down incoming alien fire before it connects - any shot that
     // resolved above (hit/miss) is already excluded by the state check, so only
     // still-in-flight shots on both sides are candidates.
-    const flyingAlienShots = projectiles.filter(p => p.owner === 'alien' && p.state === 'flying')
+    const flyingAlienShots = projectiles.filter(p => p.owner === OWNER.ALIEN && p.state === PROJECTILE_STATE.FLYING)
     if (flyingAlienShots.length) {
-      const flyingPlayerShots = projectiles.filter(p => p.owner !== 'alien' && p.state === 'flying')
+      const flyingPlayerShots = projectiles.filter(p => p.owner !== OWNER.ALIEN && p.state === PROJECTILE_STATE.FLYING)
       for (const alienShot of flyingAlienShots) {
         const playerShot = flyingPlayerShots.find(p =>
-          p.state === 'flying' &&
+          p.state === PROJECTILE_STATE.FLYING &&
           Math.hypot(p.x - alienShot.x, p.y - alienShot.y) <= PROJECTILE_INTERCEPT_RADIUS
         )
         if (playerShot) registerIntercept(alienShot, playerShot)
@@ -987,7 +1024,7 @@ export default function useSpaceGame () {
       const containerWidth = container.value.offsetWidth
       for (let i = powerUps.length - 1; i >= 0; i--) {
         const powerUp = powerUps[i]
-        if (powerUp.state !== 'floating') continue
+        if (powerUp.state !== POWERUP_STATE.FLOATING) continue
 
         if (powerUp.spawnTime === null) powerUp.spawnTime = time
         powerUp.x += powerUp.vx * dt

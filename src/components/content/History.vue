@@ -25,7 +25,7 @@
           <div class="radar-ring"></div>
           <div class="radar-blip radar-blip--me" :style="{left: (radarShip.x * 100) + '%', top: (radarShip.y * 100) + '%'}"></div>
           <div v-show="ufoVisible" class="radar-blip radar-blip--enemy" :style="{left: (radarUfo.x * 100) + '%', top: (radarUfo.y * 100) + '%'}"></div>
-          <div v-for="p in powerUps" :key="'radar-' + p.id" v-show="p.state === 'floating'" class="radar-blip radar-blip--bonus" :style="{left: (p.radarX * 100) + '%', top: (p.radarY * 100) + '%'}"></div>
+          <div v-for="p in powerUps" :key="'radar-' + p.id" v-show="p.state === POWERUP_STATE.FLOATING" class="radar-blip radar-blip--bonus" :style="{left: (p.radarX * 100) + '%', top: (p.radarY * 100) + '%'}"></div>
         </div>
       </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
@@ -39,7 +39,7 @@
           v-for="powerUp in powerUps"
           :key="powerUp.id"
           class="power-up gamify"
-          :class="{'power-up--collected': powerUp.state === 'collected'}"
+          :class="{'power-up--collected': powerUp.state === POWERUP_STATE.COLLECTED}"
           :style="{top: powerUp.y + 'px', left: powerUp.x + 'px', color: powerUp.color, borderColor: powerUp.color, boxShadow: '0 0 10px 2px ' + powerUp.color}">
         {{ powerUp.label }}
       </div>
@@ -80,7 +80,7 @@
 import CardRow from '@/components/reusable/CardRow'
 import SectionBreak from '@/components/reusable/SectionBreak'
 import useDarkMode from '@/hooks/useDarkMode'
-import useSpaceGame from '@/hooks/useSpaceGame'
+import useSpaceGame, { POWERUP_STATE } from '@/hooks/useSpaceGame'
 import SvgUFO from '@/components/icons/SvgUFO'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
@@ -192,6 +192,7 @@ export default {
       ufoPos,
       mode,
       isMobileOnly,
+      POWERUP_STATE,
       cards: [
         {
           header: 'Atmosphere TV - Staff Software Engineer',
