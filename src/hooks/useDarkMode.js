@@ -1,4 +1,4 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { isMobileOnly } from 'mobile-device-detect'
 
 // Three themes: 'light', 'dark' (plain dark - no game) and 'alien' (dark + the spaceship
@@ -9,7 +9,43 @@ export const MODE = {
   ALIEN: 'alien',
 }
 
-const current = ref(MODE.LIGHT)
+const STORAGE_KEY = 'theme'
+
+const readStored = () => {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY)
+  } catch (e) {
+    return null
+  }
+}
+
+const writeStored = (value) => {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, value)
+  } catch (e) {
+    // Ignore (e.g. storage disabled in private mode) - the choice just won't persist.
+  }
+}
+
+const prefersDark = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-color-scheme: dark)').matches
+
+// Start from the persisted choice, falling back to the browser's colour-scheme preference
+// on first visit. Alien mode is desktop-only, so a stored 'alien' on mobile is downgraded.
+const initialMode = () => {
+  const stored = readStored()
+  if (stored === MODE.LIGHT || stored === MODE.DARK || stored === MODE.ALIEN) {
+    return stored === MODE.ALIEN && isMobileOnly ? MODE.DARK : stored
+  }
+  return prefersDark() ? MODE.DARK : MODE.LIGHT
+}
+
+const current = ref(initialMode())
+
+// Persist every change once, at module scope (not per hook call).
+watch(current, writeStored)
 
 export default function useDarkMode() {
 
