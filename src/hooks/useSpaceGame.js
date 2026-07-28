@@ -153,6 +153,12 @@ export default function useSpaceGame () {
   const activeBuffColor = computed(() => activeBuffType.value ? POWERUP_TYPES[activeBuffType.value].color : null)
   const activeBuffSecondsRemaining = computed(() => Math.ceil(buffRemainingMs.value / 1000))
 
+  // Radar minimap - the ship's and UFO's field positions, normalised to 0..1 of the
+  // container each frame in tick() (the raw shipX/ufoX vars aren't reactive), so the
+  // radar can plot them as a fraction of its diameter regardless of its pixel size.
+  const radarShip = reactive({ x: 0.5, y: 0.5 })
+  const radarUfo = reactive({ x: 0.5, y: 0.5 })
+
   const shipAngle = ref(0)
   let hasFacing = false
   let shipStretch = 1 // 1 = normal; briefly pushed higher for the warp squash-and-stretch pop
@@ -721,6 +727,8 @@ export default function useSpaceGame () {
       vx: (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED,
       spawnTime: null,
       state: 'floating',
+      radarX: 0.5,
+      radarY: 0.5,
     })
 
     setTimeout(() => {
@@ -891,6 +899,15 @@ export default function useSpaceGame () {
     ufoPos.left = ufoX + 'px'
     ufoPos.top = ufoY + 'px'
 
+    // Feed the radar minimap: normalise the ship's and UFO's field positions to 0..1
+    // (power-ups get the same treatment in their own loop below, reusing radarW/H).
+    const radarW = container.value.offsetWidth
+    const radarH = container.value.offsetHeight
+    radarShip.x = clamp(shipX / radarW, 0, 1)
+    radarShip.y = clamp(shipY / radarH, 0, 1)
+    radarUfo.x = clamp(ufoX / radarW, 0, 1)
+    radarUfo.y = clamp(ufoY / radarH, 0, 1)
+
     // Advance in-flight projectiles and check each against the right target's live
     // position - player shots aim at the UFO, the UFO's own return fire aims at the ship.
     const ufoHitCircle = getUfoHitCircle()
@@ -981,6 +998,9 @@ export default function useSpaceGame () {
           continue
         }
 
+        powerUp.radarX = clamp(powerUp.x / radarW, 0, 1)
+        powerUp.radarY = clamp(powerUp.y / radarH, 0, 1)
+
         if (shipHitCircle) {
           const pickupDistance = Math.hypot(powerUp.x - shipHitCircle.x, powerUp.y - shipHitCircle.y)
           if (pickupDistance <= shipHitCircle.radius + POWERUP_COLLECT_PADDING) {
@@ -1062,6 +1082,8 @@ export default function useSpaceGame () {
     activeBuffColor,
     activeBuffSecondsRemaining,
     buffRemainingMs,
+    radarShip,
+    radarUfo,
     shipPos,
     ufoPos,
     randomizePosition,

@@ -11,10 +11,22 @@
         v-if="mode.isDarkMode.value && !isMobileOnly"
         tabindex="0"
         @mousemove="rotateShip" @click="moveShip">
-      <div class="sticky top-20 mt-2 ml-2 z-10 flex items-center gap-2" style="width: max-content">
-        <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
-        <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
-        <div v-if="activeBuffType" class="buff-badge gamify text-sm" :style="{color: activeBuffColor, borderColor: activeBuffColor}">{{ activeBuffLabel }} <span class="opacity-70">{{ activeBuffSecondsRemaining }}s</span></div>
+      <!-- Full-width sticky row: score group pinned left, radar pinned right. The row
+           itself is pointer-events-none so its transparent middle doesn't swallow game
+           clicks/mousemove; only the actual widgets re-enable pointer events. -->
+      <div class="sticky top-20 mt-2 px-2 z-10 flex items-start justify-between pointer-events-none">
+        <div class="flex items-center gap-2 pointer-events-auto">
+          <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
+          <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
+          <div v-if="activeBuffType" class="buff-badge gamify text-sm" :style="{color: activeBuffColor, borderColor: activeBuffColor}">{{ activeBuffLabel }} <span class="opacity-70">{{ activeBuffSecondsRemaining }}s</span></div>
+        </div>
+        <div class="radar pointer-events-auto">
+          <div class="radar-sweep"></div>
+          <div class="radar-ring"></div>
+          <div class="radar-blip radar-blip--me" :style="{left: (radarShip.x * 100) + '%', top: (radarShip.y * 100) + '%'}"></div>
+          <div v-show="ufoVisible" class="radar-blip radar-blip--enemy" :style="{left: (radarUfo.x * 100) + '%', top: (radarUfo.y * 100) + '%'}"></div>
+          <div v-for="p in powerUps" :key="'radar-' + p.id" v-show="p.state === 'floating'" class="radar-blip radar-blip--bonus" :style="{left: (p.radarX * 100) + '%', top: (p.radarY * 100) + '%'}"></div>
+        </div>
       </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
@@ -109,6 +121,8 @@ export default {
       activeBuffLabel,
       activeBuffColor,
       activeBuffSecondsRemaining,
+      radarShip,
+      radarUfo,
       shipPos,
       ufoPos,
       rotateShip,
@@ -168,6 +182,8 @@ export default {
       activeBuffLabel,
       activeBuffColor,
       activeBuffSecondsRemaining,
+      radarShip,
+      radarUfo,
       hit,
       shipHit,
       scorePulse,
@@ -393,6 +409,87 @@ export default {
   border-radius: 9999px;
   background: rgba(0, 0, 0, 0.4);
   line-height: 1;
+}
+
+.radar {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  border-radius: 9999px;
+  border: 2px solid rgba(74, 222, 128, 0.5);
+  background: radial-gradient(circle, rgba(8, 24, 12, 0.55) 0%, rgba(2, 10, 4, 0.8) 100%);
+  overflow: hidden;
+  box-shadow: inset 0 0 12px rgba(74, 222, 128, 0.25), 0 0 8px rgba(0, 0, 0, 0.5);
+}
+
+/* Concentric range ring for that classic radar-scope look. */
+.radar-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50%;
+  height: 50%;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(74, 222, 128, 0.22);
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+/* Rotating sonar sweep: a red wedge (bright leading edge fading into a trailing tail)
+   spun continuously around the dish. */
+.radar-sweep {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  pointer-events: none;
+  background: conic-gradient(
+      from 0deg,
+      rgba(248, 113, 113, 0) 0deg,
+      rgba(248, 113, 113, 0) 260deg,
+      rgba(248, 113, 113, 0.12) 320deg,
+      rgba(248, 113, 113, 0.5) 356deg,
+      rgba(248, 113, 113, 0.75) 360deg);
+  animation: radar-sweep-spin 2.6s linear infinite;
+}
+
+@keyframes radar-sweep-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.radar-blip {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.radar-blip--me {
+  background: #4ade80;
+  box-shadow: 0 0 6px 1px rgba(74, 222, 128, 0.9);
+}
+
+.radar-blip--enemy {
+  background: #f87171;
+  box-shadow: 0 0 6px 1px rgba(248, 113, 113, 0.9);
+  animation: radar-blip-pulse 1.2s ease-in-out infinite;
+}
+
+.radar-blip--bonus {
+  background: #60a5fa;
+  box-shadow: 0 0 6px 1px rgba(96, 165, 250, 0.9);
+}
+
+@keyframes radar-blip-pulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.5);
+  }
 }
 
 .stars {
