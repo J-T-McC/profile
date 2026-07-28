@@ -124,6 +124,32 @@ scrolling textured quads).
 - Deliverable: all remaining world entities in-canvas; CSS backgrounds removed.
 - **Token estimate: ~80k**
 
+**Status: ✅ DONE (pending visual QA).** All remaining world entities are in-canvas;
+the DOM starfield/ally/beam/power-up are gone.
+
+- `useThreeStage.js`:
+  - Ally: `enterprise.svg` extracted as a texture; positioned/rotated from the
+    reactive `ally` (`rotation.z = -angle`). Warp-in/out scale animation deferred
+    to Phase 4 (ally just shows/hides for now).
+  - Phaser beam: additive quad with a baked vertical-gradient `CanvasTexture`,
+    stretched/rotated between the snapshotted `beamX1/Y1 → beamX2/Y2` while
+    `beamActive`. (The 0.22s zap fade is Phase 4.)
+  - Power-ups: rounded-pill badge `CanvasTexture` per label+colour (dark bg + tinted
+    border + label), positioned by centre, with the idle bob-scale. Font falls back
+    to monospace if VT323 isn't loaded when the texture is baked.
+  - Starfield: black backdrop + two tiled `RepeatWrapping` quads (stars static,
+    twinkling drifting via `texture.offset`), sized/retiled on load and resize.
+- `History.vue`: removed the `.stars`/`.twinkling` divs, phaser-beam SVG, ally and
+  power-up DOM (+ `SvgEnterprise` import/registration). **Canvas dropped from
+  `z-index: 2` to `0`** so it's the backdrop and the remaining DOM overlays
+  (HUD/radar/health bars/effects) paint above it. UFO health bars stay DOM.
+- Dead CSS (`.stars`, `.twinkling`, `.ally*`, `.phaser-beam*`, `.power-up*`) is now
+  flagged by the linter — left for Phase 6 cleanup.
+
+Needs a browser to confirm: starfield look/scroll, ally facing, beam alignment,
+power-up badge text (VT323 vs fallback), and that all DOM overlays sit above the
+canvas after the z-index change.
+
 ## Phase 4 — Effects & juice
 **Goal:** Reproduce the game feel currently done in CSS keyframes: warp
 squash-stretch, hit flashes, `ufo-destroyed` pulse, ship-explosion rings, warp

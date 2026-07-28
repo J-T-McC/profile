@@ -45,44 +45,16 @@
         </div>
       </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
-      <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
-      <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
-      <!-- Phase 0 Three.js spike: WebGL stage layered above the starfield (z1) and
-           below the gameplay sprites (ship z20). pointer-events-none so it never
-           steals the overlay's click/mousemove game input. -->
-      <canvas ref="stageCanvas" class="three-stage block absolute top-0 left-0 w-full h-full pointer-events-none" style="z-index: 2;"></canvas>
+      <!-- Three.js stage: renders the starfield and every world entity (ship, UFOs,
+           projectiles, ally, phaser beam, power-ups). z-index 0 so it sits below the
+           DOM overlays (HUD/radar/health bars/effects). pointer-events-none so it
+           never steals the overlay's click/mousemove game input. -->
+      <canvas ref="stageCanvas" class="three-stage block absolute top-0 left-0 w-full h-full pointer-events-none" style="z-index: 0;"></canvas>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
-      <!-- Ship and projectiles are now rendered in the Three.js canvas above (Phase 2). -->
 
       <div v-if="shipExplosion.active" class="ship-explosion" :style="{top: shipExplosion.y + 'px', left: shipExplosion.x + 'px'}"></div>
 
-      <!-- Ally phaser beam: a straight line from the ally to the enemy it struck. The SVG has
-           no viewBox, so its user units are CSS pixels (= container coords), letting us plot
-           the snapshotted endpoints directly. -->
-      <svg v-if="ally.beamActive" class="phaser-beam" width="100%" height="100%" preserveAspectRatio="none">
-        <line :x1="ally.beamX1" :y1="ally.beamY1" :x2="ally.beamX2" :y2="ally.beamY2" class="phaser-beam-line"/>
-      </svg>
-
-      <div
-          v-if="ally.active"
-          class="ally"
-          :class="{'ally--warp-in': ally.phase === 'in', 'ally--warp-out': ally.phase === 'out'}"
-          :style="{top: ally.y + 'px', left: ally.x + 'px', width: allySize + 'px', height: (allySize * 1.2) + 'px'}">
-        <div class="ally-body" :style="{transform: 'rotate(' + ally.angle + 'deg)'}">
-          <svg-enterprise/>
-        </div>
-      </div>
-
-      <div
-          v-for="powerUp in powerUps"
-          :key="powerUp.id"
-          class="power-up gamify"
-          :class="{'power-up--collected': powerUp.state === POWERUP_STATE.COLLECTED}"
-          :style="{top: powerUp.y + 'px', left: powerUp.x + 'px', color: powerUp.color, borderColor: powerUp.color, boxShadow: '0 0 10px 2px ' + powerUp.color}">
-        {{ powerUp.label }}
-      </div>
-
-      <!-- UFO bodies render in the Three.js canvas (Phase 2); their health bars stay
+      <!-- UFO bodies render in the Three.js canvas; their health bars stay
            DOM for now, positioned in the same world/container pixel coordinates. -->
       <template v-for="enemy in enemies" :key="enemy.id">
         <div v-show="enemy.visible" class="ufo-health-track" :style="{top: enemy.y + 'px', left: enemy.x + 'px', width: (enemy.size * 0.8) + 'px', filter: 'brightness(' + enemy.brightness + '%)', 'transition-duration': enemy.transitionDuration}">
@@ -151,13 +123,11 @@ import useDarkMode from '@/hooks/useDarkMode'
 import useSpaceGame, { POWERUP_STATE, GAME_STATE } from '@/hooks/useSpaceGame'
 import useThreeStage from '@/hooks/useThreeStage'
 import { isMobileOnly } from 'mobile-device-detect'
-import SvgEnterprise from '@/components/icons/SvgEnterprise'
 import { onMounted, onUnmounted, ref } from 'vue'
 
 export default {
   name: 'History',
   components: {
-    SvgEnterprise,
     CardRow,
     SectionBreak
   },
@@ -205,7 +175,7 @@ export default {
 
     // Phase 2: Three.js renderer for the ship, UFOs and projectiles. It polls this
     // game state each frame; gated to alien mode like the game itself.
-    const { stageCanvas } = useThreeStage(mode.isAlienMode, { enemies, projectiles, getShipRenderState })
+    const { stageCanvas } = useThreeStage(mode.isAlienMode, { enemies, projectiles, ally, powerUps, getShipRenderState })
 
     // Bound on window (rather than just the small game overlay) so a Space press still
     // reaches the game - and gets its default page-scroll prevented - no matter what
