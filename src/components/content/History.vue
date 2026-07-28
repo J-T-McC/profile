@@ -14,11 +14,12 @@
       <!-- Full-width sticky row: score group pinned left, radar pinned right. The row
            itself is pointer-events-none so its transparent middle doesn't swallow game
            clicks/mousemove; only the actual widgets re-enable pointer events. -->
-      <div class="sticky top-20 mt-2 px-2 z-10 flex items-start justify-between pointer-events-none">
+      <div class="game-hud sticky top-20 mt-2 px-2 z-10 flex items-start justify-between pointer-events-none">
         <div class="flex flex-col gap-1 pointer-events-auto">
           <div class="flex items-center gap-2">
             <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
             <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
+            <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" :title="isFullscreen ? 'Exit full screen' : 'Full screen'" @click.stop="toggleFullscreen">{{ isFullscreen ? '✕' : '⛶' }}</button>
             <div v-for="buff in activeBuffs" :key="buff.id" class="buff-badge gamify text-sm" :style="{color: buff.color, borderColor: buff.color}">{{ buff.label }} <span class="opacity-70">{{ buff.seconds }}s</span></div>
           </div>
           <div class="flex items-center gap-2">
@@ -66,7 +67,7 @@
       </template>
 
     </div>
-    <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500">
+    <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500" :class="{'cards-hidden': isFullscreen}">
       <card-row
           v-for="(card, i) in cards"
           v-bind:key="card"
@@ -93,7 +94,7 @@ import useSpaceGame, { POWERUP_STATE } from '@/hooks/useSpaceGame'
 import SvgUFO from '@/components/icons/SvgUFO'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 
 export default {
   name: 'History',
@@ -150,15 +151,42 @@ export default {
       onKeyDown(event)
     }
 
+    // Full-screen mode for the game section only. We put the game's own container
+    // (#about) into the Fullscreen API rather than a wrapper so all of the game's
+    // coordinate math - which assumes container.left/top ~= 0 - stays correct: a
+    // fullscreen element sits at the screen origin. The resume cards are hidden while
+    // active (see isFullscreen binding) so only the game shows.
+    const isFullscreen = ref(false)
+
+    const toggleFullscreen = () => {
+      const el = container.value
+      if (!el) return
+      if (document.fullscreenElement === el) {
+        document.exitFullscreen?.()
+      } else {
+        el.requestFullscreen?.()
+      }
+    }
+
+    // Kept in sync via the event (not just the toggle) so pressing Esc to leave
+    // fullscreen also updates our state and re-shows the cards.
+    const onFullscreenChange = () => {
+      isFullscreen.value = document.fullscreenElement === container.value
+    }
+
     onMounted(() => {
       window.addEventListener('keydown', onWindowKeyDown)
+      document.addEventListener('fullscreenchange', onFullscreenChange)
     })
 
     onUnmounted(() => {
       window.removeEventListener('keydown', onWindowKeyDown)
+      document.removeEventListener('fullscreenchange', onFullscreenChange)
     })
 
     return {
+      isFullscreen,
+      toggleFullscreen,
       ufoClicked,
       rotateShip,
       moveShip,
@@ -298,6 +326,21 @@ export default {
 
 .mute-toggle {
   line-height: 1;
+}
+
+.cards-hidden {
+  display: none;
+}
+
+/* In full-screen the game section fills the screen on its own (the page's fixed nav
+   isn't part of the fullscreen top layer), so give it a solid backdrop and pull the
+   HUD up out of the top-20 offset that normally clears that nav. */
+#about:fullscreen {
+  background: #000;
+}
+
+#about:fullscreen .game-hud {
+  top: 0.75rem;
 }
 
 .warp-flash {
