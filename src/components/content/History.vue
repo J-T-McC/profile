@@ -47,6 +47,10 @@
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
+      <!-- Phase 0 Three.js spike: WebGL stage layered above the starfield (z1) and
+           below the gameplay sprites (ship z20). pointer-events-none so it never
+           steals the overlay's click/mousemove game input. -->
+      <canvas ref="stageCanvas" class="three-stage block absolute top-0 left-0 w-full h-full pointer-events-none" style="z-index: 2;"></canvas>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
       <img v-show="gameState === GAME_STATE.PLAYING && !shipExplosion.active" src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit, 'ship-shielded': shieldActive}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
 
@@ -151,6 +155,7 @@ import CardRow from '@/components/reusable/CardRow'
 import SectionBreak from '@/components/reusable/SectionBreak'
 import useDarkMode from '@/hooks/useDarkMode'
 import useSpaceGame, { POWERUP_STATE, GAME_STATE } from '@/hooks/useSpaceGame'
+import useThreeStage from '@/hooks/useThreeStage'
 import SvgUFO from '@/components/icons/SvgUFO'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
@@ -206,6 +211,9 @@ export default {
       ufoClicked,
     } = useSpaceGame(mode.isAlienMode)
 
+    // Phase 0: Three.js rendering spike, gated to alien mode like the game itself.
+    const { stageCanvas } = useThreeStage(mode.isAlienMode)
+
     // Bound on window (rather than just the small game overlay) so a Space press still
     // reaches the game - and gets its default page-scroll prevented - no matter what
     // currently has focus. Clicking a plain card-row div (not a link/button) doesn't
@@ -257,6 +265,7 @@ export default {
     return {
       isFullscreen,
       toggleFullscreen,
+      stageCanvas,
       ufoClicked,
       rotateShip,
       moveShip,
