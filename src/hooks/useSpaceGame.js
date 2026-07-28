@@ -81,6 +81,8 @@ const REGULAR_HOMING_RADIUS = 80     // px from the UFO's centre before the nudg
 // Player health - the UFO's return fire now costs the player a point per unblocked hit
 // (and still heals the UFO one). No passive regen; only health pickups restore it.
 const PLAYER_MAX_HEALTH = 10
+const PLAYER_MAX_LIVES = 3           // lives before it's game over; each death spends one
+const SHIP_EXPLOSION_DURATION = 900  // ms the ship's death explosion plays before the prompt
 const PLAYER_HIT_DAMAGE = 1          // health lost per unblocked alien hit
 const HEALTH_ITEM_RESTORE = 4        // health restored by a health pickup
 const SHIELD_BUFF_DURATION = 8000    // ms a shield pickup blocks all incoming hits for
@@ -160,6 +162,14 @@ export const PROJECTILE_STATE = {
 export const POWERUP_STATE = {
   FLOATING: 'floating',
   COLLECTED: 'collected',
+}
+
+// Overall run state: PLAYING, PROMPT (ship destroyed with lives left - continue/restart)
+// and GAME_OVER (all lives spent). Exported so History.vue's overlays can compare against it.
+export const GAME_STATE = {
+  PLAYING: 'playing',
+  PROMPT: 'prompt',
+  GAME_OVER: 'gameOver',
 }
 
 export default function useSpaceGame (isActive) {
@@ -247,6 +257,12 @@ export default function useSpaceGame (isActive) {
   const playerHealth = ref(PLAYER_MAX_HEALTH)
   const playerHealthRatio = computed(() => playerHealth.value / PLAYER_MAX_HEALTH)
   const playerHealthColor = computed(() => healthColor(playerHealthRatio.value))
+
+  // Lives + overall run state. When health hits 0 the ship explodes (shipExplosion), a life
+  // is spent, and the run either offers a continue/restart prompt or ends (see killPlayer).
+  const lives = ref(PLAYER_MAX_LIVES)
+  const gameState = ref(GAME_STATE.PLAYING)
+  const shipExplosion = reactive({ active: false, x: 0, y: 0 })
 
   // The temporary AI ally. Position/angle are JS-driven each frame (like the enemies);
   // `active` gates rendering and `phase` ('in' | 'active' | 'out') drives the warp
@@ -797,8 +813,26 @@ export default function useSpaceGame (isActive) {
     }, MISS_ANIM_DURATION)
   }
 
-  // The UFO's return fire connecting - instead of costing the player anything (there's
-  // no player health), it heals the UFO back up, capped at full health.
+  // Health hit zero: blow the ship up, spend a life, and after the explosion plays either
+  // offer a continue/restart prompt (lives remaining) or end the run (game over). Freezes
+  // the sim immediately via shipExplosion so nothing can pile on during the blast.
+  const killPlayer = () => {
+    if (gameState.value !== GAME_STATE.PLAYING || shipExplosion.active) return
+
+    playDestroyedSound()
+    shipExplosion.x = shipX + 20 // ship is 40px; centre the burst on it
+    shipExplosion.y = shipY + 20
+    shipExplosion.active = true
+    lives.value = Math.max(0, lives.value - 1)
+
+    setTimeout(() => {
+      shipExplosion.active = false
+      gameState.value = lives.value > 0 ? GAME_STATE.PROMPT : GAME_STATE.GAME_OVER
+    }, SHIP_EXPLOSION_DURATION)
+  }
+
+  // The UFO's return fire connecting - the player loses a health point (and the shooter
+  // heals one). If that empties the health bar, the ship is destroyed (killPlayer).
   const registerAlienHit = (projectile) => {
     projectile.state = PROJECTILE_STATE.HIT
 
@@ -817,6 +851,8 @@ export default function useSpaceGame (isActive) {
       shipHitTimeoutId = setTimeout(() => {
         shipHit.value = false
       }, SHIP_HIT_FLASH_DURATION)
+
+      if (playerHealth.value === 0) killPlayer()
     }
 
     setTimeout(() => {
@@ -1037,7 +1073,7 @@ export default function useSpaceGame (isActive) {
   const schedulePowerUpSpawn = () => {
     const delay = POWERUP_SPAWN_INTERVAL_MIN + Math.random() * (POWERUP_SPAWN_INTERVAL_MAX - POWERUP_SPAWN_INTERVAL_MIN)
     powerUpSpawnTimeoutId = setTimeout(() => {
-      if (level.value >= POWERUP_MIN_LEVEL) {
+      if (gameState.value === GAME_STATE.PLAYING && level.value >= POWERUP_MIN_LEVEL) {
         spawnPowerUp()
       }
       schedulePowerUpSpawn()
@@ -1092,8 +1128,8 @@ export default function useSpaceGame (isActive) {
   // since a KeyboardEvent has no x/y to fire at like a mouse click does.
   const fireForward = () => {
     // Nothing sensible to fire at until the ship has faced a direction at least once
-    // (e.g. Space pressed before any mouse movement).
-    if (!ship.value || !hasFacing) return
+    // (e.g. Space pressed before any mouse movement), and not while paused/dead.
+    if (!ship.value || !hasFacing || gameState.value !== GAME_STATE.PLAYING) return
 
     // Invert rotateShip's degree formula to recover the angle in radians:
     // degree = (radians * (180 / Math.PI) * -1) + 180  =>  radians = (180 - degree) * (Math.PI / 180)
@@ -1155,6 +1191,7 @@ export default function useSpaceGame (isActive) {
   }
 
   const ufoClicked = (event) => {
+    if (gameState.value !== GAME_STATE.PLAYING) return
     dismissHint()
     const containerOffset = container.value.getBoundingClientRect()
     const targetX = event.x
@@ -1164,6 +1201,7 @@ export default function useSpaceGame (isActive) {
   }
 
   const moveShip = (event) => {
+    if (gameState.value !== GAME_STATE.PLAYING) return
     dismissHint()
 
     // Clicking an enemy uses @click.stop (it fires instead of flying), so this only ever
@@ -1184,6 +1222,14 @@ export default function useSpaceGame (isActive) {
     // Clamp dt so tabbing away and back doesn't fling the ship/projectiles.
     const dt = Math.min((time - lastFrameTime) / 1000, 0.1)
     lastFrameTime = time
+
+    // Frozen while the ship is exploding or a prompt/game-over overlay is up: keep the loop
+    // alive (so we can resume) but run no simulation. lastFrameTime is still advanced above,
+    // so dt stays small when play resumes.
+    if (gameState.value !== GAME_STATE.PLAYING || shipExplosion.active) {
+      rafId = requestAnimationFrame(tick)
+      return
+    }
 
     // Ease the ship toward its target - covers a fraction of the remaining distance
     // each frame (framerate-independent), so it starts fast and decelerates into
@@ -1481,6 +1527,10 @@ export default function useSpaceGame (isActive) {
     ally.beamActive = false
     allyRemainingMs.value = 0
 
+    lives.value = PLAYER_MAX_LIVES
+    gameState.value = GAME_STATE.PLAYING
+    shipExplosion.active = false
+
     shipX = 0
     shipY = 0
     shipTargetX = 0
@@ -1497,12 +1547,38 @@ export default function useSpaceGame (isActive) {
     applyShipTransform()
   }
 
-  // Mounts a fresh game and starts its loop/timers.
-  const startGame = () => {
+  // Sets up a fresh game (state + enemies + spawn timer) WITHOUT touching the rAF loop, so
+  // it's safe to call while the loop is already running (e.g. Restart from the prompt).
+  const beginGame = () => {
     resetGame()
     syncEnemyCount()
     schedulePowerUpSpawn()
+  }
+
+  // Mounts a fresh game and starts its loop (used when alien mode is first entered).
+  const startGame = () => {
+    beginGame()
     rafId = requestAnimationFrame(tick)
+  }
+
+  // Continue after a death: resume the same run (score/level kept) with health restored and
+  // the immediate threat cleared, plus a short firing grace so you aren't instantly re-killed.
+  const continueGame = () => {
+    projectiles.splice(0)
+    playerHealth.value = PLAYER_MAX_HEALTH
+    shipHit.value = false
+    clearTimeout(shipHitTimeoutId)
+
+    const grace = performance.now() + 1500
+    enemies.forEach((enemy) => { enemy.nextFireAt = grace })
+
+    lastFrameTime = null
+    gameState.value = GAME_STATE.PLAYING
+  }
+
+  // Restart from the prompt or game-over screen - a brand new run (loop already running).
+  const restartGame = () => {
+    beginGame()
   }
 
   // Tears everything down - cancels the loop, clears every timer and parks the audio.
@@ -1551,6 +1627,12 @@ export default function useSpaceGame (isActive) {
     playerHealth,
     playerHealthRatio,
     playerHealthColor,
+    lives,
+    maxLives: PLAYER_MAX_LIVES,
+    gameState,
+    shipExplosion,
+    continueGame,
+    restartGame,
     radarShip,
     shipPos,
     rotateShip,

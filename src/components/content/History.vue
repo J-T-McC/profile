@@ -28,6 +28,12 @@
               <div class="player-health-fill" :style="{width: (playerHealthRatio * 100) + '%', backgroundColor: playerHealthColor}"></div>
             </div>
           </div>
+          <div class="flex items-center gap-2">
+            <span class="gamify text-white text-xs">LIVES</span>
+            <span class="gamify text-lg leading-none tracking-widest">
+              <span v-for="n in maxLives" :key="n" :class="n <= lives ? 'text-green-400' : 'text-gray-600'">▲</span>
+            </span>
+          </div>
         </div>
         <div class="radar pointer-events-auto">
           <div class="radar-sweep"></div>
@@ -42,7 +48,9 @@
       <div class="stars z-0 absolute top-0 left-0 w-full h-full"></div>
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
-      <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit, 'ship-shielded': shieldActive}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
+      <img v-show="gameState === GAME_STATE.PLAYING && !shipExplosion.active" src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit, 'ship-shielded': shieldActive}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
+
+      <div v-if="shipExplosion.active" class="ship-explosion" :style="{top: shipExplosion.y + 'px', left: shipExplosion.x + 'px'}"></div>
       <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser"/>
 
       <!-- Ally phaser beam: a straight line from the ally to the enemy it struck. The SVG has
@@ -84,6 +92,40 @@
         </div>
       </template>
 
+      <!-- 8-bit continue/restart + game-over screens. Teleported to #about (the element that
+           goes fullscreen) rather than <body>: they're position:fixed so they still centre in
+           the viewport, but staying inside the fullscreen subtree means they also show while
+           fullscreen (the fullscreen top layer hides anything outside that element). -->
+      <teleport to="#about">
+        <div v-if="gameState === GAME_STATE.PROMPT" class="arcade-modal">
+          <div class="arcade-panel">
+            <div class="arcade-title">SHIP DESTROYED</div>
+            <div class="arcade-line">
+              LIVES LEFT
+              <span class="tracking-widest ml-1">
+                <span v-for="n in maxLives" :key="n" :class="n <= lives ? 'text-green-400' : 'text-gray-600'">▲</span>
+              </span>
+            </div>
+            <div class="arcade-line arcade-blink">CONTINUE?</div>
+            <div class="arcade-actions">
+              <button type="button" class="arcade-btn" @click="continueGame">CONTINUE</button>
+              <button type="button" class="arcade-btn arcade-btn--secondary" @click="restartGame">RESTART</button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="gameState === GAME_STATE.GAME_OVER" class="arcade-modal">
+          <div class="arcade-panel">
+            <div class="arcade-title arcade-title--over">GAME OVER</div>
+            <div class="arcade-line">SCORE {{ score }}</div>
+            <div class="arcade-line">BEST {{ bestScore }}</div>
+            <div class="arcade-actions">
+              <button type="button" class="arcade-btn arcade-btn--danger" @click="restartGame">PLAY AGAIN</button>
+            </div>
+          </div>
+        </div>
+      </teleport>
+
     </div>
     <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500" :class="{'cards-hidden': isFullscreen}">
       <card-row
@@ -108,7 +150,7 @@
 import CardRow from '@/components/reusable/CardRow'
 import SectionBreak from '@/components/reusable/SectionBreak'
 import useDarkMode from '@/hooks/useDarkMode'
-import useSpaceGame, { POWERUP_STATE } from '@/hooks/useSpaceGame'
+import useSpaceGame, { POWERUP_STATE, GAME_STATE } from '@/hooks/useSpaceGame'
 import SvgUFO from '@/components/icons/SvgUFO'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
@@ -150,6 +192,12 @@ export default {
       ALLY_SIZE,
       playerHealthRatio,
       playerHealthColor,
+      lives,
+      maxLives,
+      gameState,
+      shipExplosion,
+      continueGame,
+      restartGame,
       radarShip,
       shipPos,
       rotateShip,
@@ -231,6 +279,13 @@ export default {
       allySize: ALLY_SIZE,
       playerHealthRatio,
       playerHealthColor,
+      lives,
+      maxLives,
+      gameState,
+      shipExplosion,
+      continueGame,
+      restartGame,
+      GAME_STATE,
       radarShip,
       shipHit,
       scorePulse,
@@ -452,6 +507,134 @@ export default {
     opacity: 0;
     filter: brightness(3) drop-shadow(0 0 14px #a5b4fc);
   }
+}
+
+/* 8-bit ship death burst: layered square rings that punch outward in choppy steps. */
+.ship-explosion {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  z-index: 22;
+  background: #fef08a;
+  box-shadow: 0 0 0 6px #f97316, 0 0 0 12px #ef4444, 0 0 0 18px #7f1d1d;
+  transform: translate(-50%, -50%);
+  image-rendering: pixelated;
+  pointer-events: none;
+  animation: ship-explode 0.9s steps(5) forwards;
+}
+
+@keyframes ship-explode {
+  0% {
+    transform: translate(-50%, -50%) scale(0.4);
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(3.4);
+    opacity: 0;
+  }
+}
+
+/* --- 8-bit continue / game-over screens (teleported to <body>) --------------------- */
+.arcade-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.78);
+}
+
+.arcade-panel {
+  font-family: 'VT323', monospace;
+  color: #e2e8f0;
+  background: #0b1020;
+  border: 4px solid #e2e8f0;
+  /* Blocky layered frame instead of a soft border-radius, for the arcade-cabinet look. */
+  box-shadow: 0 0 0 4px #0b1020, 0 0 0 8px #64748b, 0 10px 0 8px rgba(0, 0, 0, 0.35);
+  padding: 28px 40px;
+  text-align: center;
+  image-rendering: pixelated;
+}
+
+.arcade-title {
+  font-size: 2.4rem;
+  line-height: 1;
+  letter-spacing: 2px;
+  color: #38bdf8;
+  text-shadow: 3px 3px 0 #0e7490;
+  margin-bottom: 14px;
+}
+
+.arcade-title--over {
+  color: #f87171;
+  text-shadow: 3px 3px 0 #7f1d1d;
+}
+
+.arcade-line {
+  font-size: 1.5rem;
+  line-height: 1.3;
+  letter-spacing: 1px;
+}
+
+.arcade-blink {
+  margin-top: 6px;
+  animation: arcade-blink 1s steps(1) infinite;
+}
+
+@keyframes arcade-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.arcade-actions {
+  margin-top: 20px;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+}
+
+.arcade-btn {
+  font-family: 'VT323', monospace;
+  font-size: 1.5rem;
+  letter-spacing: 1px;
+  padding: 6px 22px;
+  color: #0b1020;
+  background: #34d399;
+  border: none;
+  box-shadow: 5px 5px 0 #065f46;
+  cursor: pointer;
+}
+
+.arcade-btn:hover {
+  filter: brightness(1.1);
+}
+
+.arcade-btn:active {
+  transform: translate(3px, 3px);
+  box-shadow: 2px 2px 0 #065f46;
+}
+
+.arcade-btn--secondary {
+  background: #fbbf24;
+  box-shadow: 5px 5px 0 #92400e;
+}
+
+.arcade-btn--secondary:active {
+  box-shadow: 2px 2px 0 #92400e;
+}
+
+.arcade-btn--danger {
+  background: #f87171;
+  box-shadow: 5px 5px 0 #7f1d1d;
+}
+
+.arcade-btn--danger:active {
+  box-shadow: 2px 2px 0 #7f1d1d;
 }
 
 .warp-flash {
