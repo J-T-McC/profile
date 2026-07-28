@@ -84,6 +84,10 @@ const PLAYER_MAX_HEALTH = 10
 const PLAYER_HIT_DAMAGE = 1          // health lost per unblocked alien hit
 const HEALTH_ITEM_RESTORE = 4        // health restored by a health pickup
 const SHIELD_BUFF_DURATION = 8000    // ms a shield pickup blocks all incoming hits for
+// Defensive pickups (health/shield) get their spawn weight boosted as the player's health
+// drops, so they show up more often exactly when you need them. At full health the base
+// weight is unchanged; at zero health it's multiplied by (1 + this bonus).
+const LOW_HEALTH_DEFENSIVE_WEIGHT_BONUS = 8
 
 // Power-up categories - weapon buffs are mutually exclusive with each other, but stack
 // alongside a shield and health pickups (you can hold a laser AND a shield at once).
@@ -308,13 +312,25 @@ export default function useSpaceGame () {
   // capped maximum, so pickups stay relevant as fights get longer.
   const scaledBuffDuration = (base) => Math.min(base + (level.value - 1) * BUFF_DURATION_PER_LEVEL, BUFF_DURATION_MAX)
 
+  // A type's spawn weight, with defensive pickups (health/shield) boosted as the player's
+  // health drops - at full health it's the base weight, at zero health it's scaled up by
+  // (1 + LOW_HEALTH_DEFENSIVE_WEIGHT_BONUS) so they show up more often when you're hurt.
+  const getPowerUpWeight = (id) => {
+    const type = POWERUP_TYPES[id]
+    const base = type.weight ?? 1
+    const isDefensive = type.category === POWERUP_CATEGORY.HEALTH || type.category === POWERUP_CATEGORY.SHIELD
+    if (!isDefensive) return base
+    return base * (1 + (1 - playerHealthRatio.value) * LOW_HEALTH_DEFENSIVE_WEIGHT_BONUS)
+  }
+
   // Weighted random pick from the given power-up type ids - lets defensive pickups
-  // (health/shield, given a lower weight) show up less often than weapon buffs.
+  // (health/shield, given a lower weight) show up less often than weapon buffs, except
+  // when the player is low on health (see getPowerUpWeight).
   const pickWeightedPowerUpType = (ids) => {
-    const total = ids.reduce((sum, id) => sum + (POWERUP_TYPES[id].weight ?? 1), 0)
+    const total = ids.reduce((sum, id) => sum + getPowerUpWeight(id), 0)
     let roll = Math.random() * total
     for (const id of ids) {
-      roll -= POWERUP_TYPES[id].weight ?? 1
+      roll -= getPowerUpWeight(id)
       if (roll <= 0) return id
     }
     return ids[ids.length - 1]
