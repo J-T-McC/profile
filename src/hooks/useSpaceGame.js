@@ -98,6 +98,7 @@ const ALLY_DURATION = 12000         // base ms the ally fights before warping ou
 const ALLY_WARP_IN_DURATION = 700   // ms - must match the ally-warp-in CSS animation
 const ALLY_WARP_OUT_DURATION = 700  // ms - must match the ally-warp-out CSS animation
 const ALLY_SIZE = 64                // px width of the starship sprite (height is 1.2x)
+const SHIP_SIZE = 40                // px width/height of the player ship (Tailwind w-10 h-10)
 const ALLY_FOLLOW_RATE = 3          // 1/s - eased-follow rate as it chases its target
 const ALLY_ENGAGE_RANGE = 340       // px - the ally must be within this of an enemy to fire
 const ALLY_STANDOFF = 150           // px - preferred distance it holds from the enemy it's chasing
@@ -326,8 +327,9 @@ export default function useSpaceGame (isActive) {
     [CSS.transitionDuration]: '0.1s',
   })
 
-  // Numeric ship position/target driving the per-frame movement loop. Coordinate
-  // space matches the original code: x is viewport-relative, y is container-relative.
+  // Numeric ship position/target driving the per-frame movement loop. World space:
+  // container pixels, origin at the container's top-left, +x right, +y down (see
+  // pointerToWorld). Everything - ship, enemies, projectiles, pointer - lives here.
   let shipX = 0
   let shipY = 0
   let shipTargetX = 0
@@ -658,20 +660,36 @@ export default function useSpaceGame (isActive) {
     shipPos.transform = `rotate(${shipAngle.value}deg) scale(${1 / shipStretch}, ${shipStretch})`
   }
 
+  // --- Coordinate bridge -----------------------------------------------------
+  // Single source of truth for turning a pointer event into world coordinates.
+  // World space = container pixels: origin at the container's top-left, +x right,
+  // +y down. Every input handler (and, from Phase 2 on, the Three.js renderer)
+  // shares this one space, so nothing needs to measure the DOM to reason about
+  // where things are. Both axes are container-relative here; the original code
+  // leaned on #about spanning the full page width to treat x as viewport-relative,
+  // which was fragile off the left edge / in other layouts.
+  const pointerToWorld = (event) => {
+    const rect = container.value.getBoundingClientRect()
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    }
+  }
+
   const rotateShip = (event) => {
-    if (!container.value || !ship.value) return
+    if (!container.value) return
     dismissHint()
 
-    const containerOffset = container.value.getBoundingClientRect()
+    const pointer = pointerToWorld(event)
+    lastPointerX = pointer.x
+    lastPointerY = pointer.y
 
-    lastPointerX = event.x
-    lastPointerY = event.y - containerOffset.top
+    // Aim from the ship's JS-tracked position - no DOM measurement. shipX/shipY is
+    // the ship's top-left; adding SHIP_SIZE reproduces the original pivot corner.
+    const centerX = shipX + SHIP_SIZE
+    const centerY = shipY + SHIP_SIZE
 
-    const pointerBox = ship.value.getBoundingClientRect(),
-        centerY = pointerBox.top + ship.value.offsetHeight - containerOffset.top,
-        centerX = pointerBox.left + ship.value.offsetWidth - containerOffset.left
-
-    const radians = Math.atan2(event.x - centerX, (event.y - containerOffset.top) - centerY)
+    const radians = Math.atan2(pointer.x - centerX, pointer.y - centerY)
     const degree = (radians * (180 / Math.PI) * -1) + 180
 
     shipAngle.value = degree
@@ -722,19 +740,15 @@ export default function useSpaceGame (isActive) {
     }, WARP_SETTLE_DURATION + 20)
   }
 
-  // The player's own ship hit circle (still read from the DOM, since the ship is a single
-  // element), so enemy return fire can check for a hit against its on-screen position/size.
-  const getShipHitCircle = () => {
-    if (!ship.value || !container.value) return null
-    const shipRect = ship.value.getBoundingClientRect()
-    const containerOffset = container.value.getBoundingClientRect()
-
-    return {
-      x: shipRect.left + shipRect.width / 2,
-      y: (shipRect.top + shipRect.height / 2) - containerOffset.top,
-      radius: Math.max(shipRect.width, shipRect.height) / 2 + PROJECTILE_HIT_PADDING,
-    }
-  }
+  // The player's own ship hit circle, computed straight from its JS-tracked position and
+  // fixed size - no DOM read. shipX/shipY is the ship's top-left, so its centre is offset
+  // by half of SHIP_SIZE. A constant radius also gives a steadier hitbox than the old
+  // transformed-bounding-box read, which grew and shrank as the ship rotated.
+  const getShipHitCircle = () => ({
+    x: shipX + SHIP_SIZE / 2,
+    y: shipY + SHIP_SIZE / 2,
+    radius: SHIP_SIZE / 2 + PROJECTILE_HIT_PADDING,
+  })
 
   // The core of a hit landing on an enemy - scoring, health/kill/respawn handling and the
   // hit/kill feedback - independent of what dealt it, so both a player projectile
@@ -1193,10 +1207,8 @@ export default function useSpaceGame (isActive) {
   const ufoClicked = (event) => {
     if (gameState.value !== GAME_STATE.PLAYING) return
     dismissHint()
-    const containerOffset = container.value.getBoundingClientRect()
-    const targetX = event.x
-    const targetY = event.y - containerOffset.top
-    const radians = Math.atan2(targetX - shipX, targetY - shipY)
+    const pointer = pointerToWorld(event)
+    const radians = Math.atan2(pointer.x - shipX, pointer.y - shipY)
     fireAt(shipX, shipY, radians)
   }
 
@@ -1206,9 +1218,9 @@ export default function useSpaceGame (isActive) {
 
     // Clicking an enemy uses @click.stop (it fires instead of flying), so this only ever
     // runs for clicks on empty space.
-    const containerOffset = container.value.getBoundingClientRect()
-    shipTargetX = event.x
-    shipTargetY = event.y - containerOffset.top
+    const pointer = pointerToWorld(event)
+    shipTargetX = pointer.x
+    shipTargetY = pointer.y
     triggerWarpEffect()
   }
 

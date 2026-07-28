@@ -1,22 +1,18 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 import * as THREE from 'three'
 
-// Phase 0 spike: prove the Three.js rendering stack can live alongside the
-// existing DOM/CSS game before we start porting real entities.
+// Phase 0-1 Three.js stage. Proves the rendering stack coexists with the DOM
+// game (Phase 0) and shares its coordinate space (Phase 1).
 //
-// What it validates:
-//   - three bundles/resolves under the Vue-CLI (webpack) build
-//   - a WebGL canvas mounts inside #about and sizes to the container
-//   - an orthographic camera + ResizeObserver keep the scene correct on
-//     resize and fullscreen (where the container origin moves)
-//   - the existing Cloudinary ship PNG loads as a texture (CORS pipeline)
-//   - a rAF render loop drives a sprite's position
-//   - it only runs in alien mode and fully tears down (dispose + cancel rAF
-//     + disconnect observer) when alien mode turns off or the view unmounts
+// World space (matching the game logic in useSpaceGame): container pixels, origin
+// at the top-left, +x right, +y down. The orthographic camera is sized so one
+// scene unit == one CSS pixel, and toScene() flips only the Y axis so world
+// coordinates map straight onto the scene with no per-entity conversion. That's
+// the coordinate bridge the rest of the port builds on.
 //
-// Coordinate mapping (screen <-> scene) is intentionally NOT solved here - it's
-// the whole job of Phase 1. This spike uses a centred ortho camera so there are
-// no flip/handedness surprises to muddy the "does the stack work?" question.
+// Verification hook: the debug sprite tracks the cursor (in world coords), so you
+// can confirm the screen -> world -> scene round-trip lines up exactly - including
+// in fullscreen, where the container's screen origin moves.
 export default function useThreeStage (active) {
   const stageCanvas = ref(null)
 
@@ -27,25 +23,44 @@ export default function useThreeStage (active) {
   let texture = null
   let material = null
   let resizeObserver = null
+  let pointerTarget = null
   let rafId = null
   let startTime = 0
+  let viewWidth = 1
+  let viewHeight = 1
+
+  // Latest cursor position in world coords, or null before the first move.
+  let pointerWorld = null
+
+  // World (container px, +y down) -> scene (same units, +y up). The camera places
+  // the origin at the bottom-left, so we flip Y; X passes straight through.
+  const toScene = (x, y) => [x, viewHeight - y]
 
   const sizeToContainer = () => {
     const canvas = stageCanvas.value
     if (!canvas || !renderer || !camera) return
     const parent = canvas.parentElement
-    const width = parent?.clientWidth || canvas.clientWidth || 1
-    const height = parent?.clientHeight || canvas.clientHeight || 1
+    viewWidth = parent?.clientWidth || canvas.clientWidth || 1
+    viewHeight = parent?.clientHeight || canvas.clientHeight || 1
 
     // Cap DPR so retina/4K fullscreen doesn't tank the fill rate.
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
-    renderer.setSize(width, height, false)
+    renderer.setSize(viewWidth, viewHeight, false)
 
-    camera.left = -width / 2
-    camera.right = width / 2
-    camera.top = height / 2
-    camera.bottom = -height / 2
+    // 1 unit == 1 px, origin bottom-left (+y up); toScene() maps the game's
+    // top-left / +y-down world coords into this.
+    camera.left = 0
+    camera.right = viewWidth
+    camera.top = viewHeight
+    camera.bottom = 0
     camera.updateProjectionMatrix()
+  }
+
+  const onPointerMove = (event) => {
+    const canvas = stageCanvas.value
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    pointerWorld = { x: event.clientX - rect.left, y: event.clientY - rect.top }
   }
 
   const tick = (time) => {
@@ -53,9 +68,17 @@ export default function useThreeStage (active) {
     if (!startTime) startTime = time
     const t = (time - startTime) / 1000
 
-    // Obvious, framerate-independent orbit so "is it alive?" is unambiguous.
-    const radius = Math.min(camera.right, camera.top) * 0.5
-    sprite.position.set(Math.cos(t) * radius, Math.sin(t * 0.9) * radius, 0)
+    // Track the cursor once it has moved (proving the coordinate bridge); until
+    // then, orbit the centre so there's obvious life on screen.
+    if (pointerWorld) {
+      sprite.position.set(...toScene(pointerWorld.x, pointerWorld.y), 0)
+    } else {
+      const r = Math.min(viewWidth, viewHeight) * 0.25
+      sprite.position.set(
+        ...toScene(viewWidth / 2 + Math.cos(t) * r, viewHeight / 2 + Math.sin(t * 0.9) * r),
+        0
+      )
+    }
 
     renderer.render(scene, camera)
     rafId = requestAnimationFrame(tick)
@@ -69,7 +92,7 @@ export default function useThreeStage (active) {
     scene = new THREE.Scene()
 
     // Placeholder frustum; real extents get set by sizeToContainer() below.
-    camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10)
+    camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 10)
     camera.position.z = 5
 
     // Reuse the real ship art to prove the texture pipeline end to end.
@@ -80,7 +103,8 @@ export default function useThreeStage (active) {
     )
     texture.colorSpace = THREE.SRGBColorSpace
 
-    material = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.85 })
+    // Tinted + translucent so it reads as a debug marker, not a second ship.
+    material = new THREE.SpriteMaterial({ map: texture, color: 0x66ccff, transparent: true, opacity: 0.85 })
     sprite = new THREE.Sprite(material)
     sprite.scale.set(48, 48, 1)
     scene.add(sprite)
@@ -89,6 +113,11 @@ export default function useThreeStage (active) {
 
     resizeObserver = new ResizeObserver(sizeToContainer)
     if (canvas.parentElement) resizeObserver.observe(canvas.parentElement)
+
+    // Listen on the overlay (the canvas is pointer-events-none, so events pass
+    // through to it). Keep the exact target so teardown can detach cleanly.
+    pointerTarget = canvas.parentElement
+    pointerTarget?.addEventListener('pointermove', onPointerMove)
 
     startTime = 0
     rafId = requestAnimationFrame(tick)
@@ -101,6 +130,10 @@ export default function useThreeStage (active) {
       resizeObserver.disconnect()
       resizeObserver = null
     }
+    if (pointerTarget) {
+      pointerTarget.removeEventListener('pointermove', onPointerMove)
+      pointerTarget = null
+    }
     if (material) material.dispose()
     if (texture) texture.dispose()
     if (renderer) {
@@ -108,6 +141,7 @@ export default function useThreeStage (active) {
       renderer.forceContextLoss?.()
     }
     renderer = scene = camera = sprite = texture = material = null
+    pointerWorld = null
     startTime = 0
   }
 

@@ -62,6 +62,26 @@ input parity in windowed and fullscreen.
 - Risk retired: the biggest tax — the coordinate flip. Do this before any entity work.
 - **Token estimate: ~70k**
 
+**Status: ✅ DONE.** Turned out cleaner than expected: the game's world space was
+*already* container pixels (top-left origin, +y down), so this was a decoupling
+job, not a physics rewrite.
+
+- `useSpaceGame.js`: added a single `pointerToWorld(event)` bridge and routed
+  `rotateShip`, `moveShip`, `ufoClicked` through it. Both axes are now
+  container-relative (fixed the fragile "x is viewport-relative" assumption that
+  relied on `#about` spanning the full page width).
+- Removed both DOM-measurement reads: `getShipHitCircle` and `rotateShip`'s pivot
+  now derive from the JS-tracked `shipX`/`shipY` + a new `SHIP_SIZE` constant. The
+  only remaining DOM reads are legit `container` reads (rect for pointer→world,
+  `offsetWidth/Height` for world bounds). One `ship.value` existence guard remains
+  in `fireForward`, deliberately left for Phase 2 (when the `<img>` is removed).
+- `useThreeStage.js`: camera now maps 1 unit = 1 px with a single `toScene(x,y) =
+  [x, viewHeight - y]` Y-flip. The debug sprite tracks the cursor in world coords
+  to verify the screen→world→scene round-trip in windowed **and** fullscreen.
+- Minor behaviour deltas (accepted): the ship hitbox is now a constant radius
+  (was rotation-dependent via the transformed bounding box); aiming pivot is
+  computed from the untransformed position (was the live transformed rect).
+
 ## Phase 2 — Core entities as sprites
 **Goal:** Render the gameplay-critical entities in Three and delete their DOM/CSS
 counterparts, wiring positions to existing reactive state each frame:
