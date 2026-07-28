@@ -1,5 +1,8 @@
 <template>
-  <div class="overflow-x-hidden w-full">
+  <!-- overflow-x: clip (overriding the overflow-x-hidden fallback) still hides horizontal
+       overflow but, unlike `hidden`, does NOT establish a scroll container - which would
+       otherwise break `position: sticky` on descendants (e.g. the game's score HUD). -->
+  <div class="overflow-x-hidden w-full" style="overflow-x: clip">
     <me></me>
     <history></history>
     <contact></contact>

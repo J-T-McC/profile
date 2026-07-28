@@ -11,7 +11,7 @@
         v-if="mode.isDarkMode.value && !isMobileOnly"
         tabindex="0"
         @mousemove="rotateShip" @click="moveShip">
-      <div class="absolute top-2 left-2 z-10 flex items-center gap-2">
+      <div class="sticky top-20 mt-2 ml-2 z-10 flex items-center gap-2" style="width: max-content">
         <div v-if="score || bestScore" class="gamify text-white text-xl" :class="{'score-pulse': scorePulse}">SCORE: {{ score }} <span class="text-base opacity-70">BEST: {{ bestScore }} &middot; LVL {{ level }}</span></div>
         <button type="button" class="mute-toggle text-white text-xs bg-black bg-opacity-40 px-2 py-1 rounded-full" @click.stop="toggleMute">{{ muted ? '🔇' : '🔊' }}</button>
         <div v-if="activeBuffType" class="buff-badge gamify text-sm" :style="{color: activeBuffColor, borderColor: activeBuffColor}">{{ activeBuffLabel }} <span class="opacity-70">{{ activeBuffSecondsRemaining }}s</span></div>
