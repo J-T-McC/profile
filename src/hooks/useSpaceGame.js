@@ -96,11 +96,12 @@ const ALLY_DURATION = 12000         // base ms the ally fights before warping ou
 const ALLY_WARP_IN_DURATION = 700   // ms - must match the ally-warp-in CSS animation
 const ALLY_WARP_OUT_DURATION = 700  // ms - must match the ally-warp-out CSS animation
 const ALLY_SIZE = 64                // px width of the starship sprite (height is 1.2x)
-const ALLY_FOLLOW_RATE = 2.5        // 1/s - eased-follow rate toward its patrol target
-const ALLY_MOVE_INTERVAL = 2600     // ms base interval before it repositions to a new patrol spot
-const ALLY_FIRE_COOLDOWN = 700      // ms between phaser shots
-const ALLY_PHASER_SPEED = 1000      // px/s - a touch faster than the player's own shots
-const ALLY_PHASER_DAMAGE = 2        // phasers hit hard, like the laser buff
+const ALLY_FOLLOW_RATE = 3          // 1/s - eased-follow rate as it chases its target
+const ALLY_ENGAGE_RANGE = 340       // px - the ally must be within this of an enemy to fire
+const ALLY_STANDOFF = 150           // px - preferred distance it holds from the enemy it's chasing
+const ALLY_FIRE_COOLDOWN = 700      // ms between phaser beams
+const ALLY_BEAM_DURATION = 220      // ms a fired phaser beam stays drawn (must match the CSS fade)
+const ALLY_PHASER_DAMAGE = 2        // each phaser beam hits hard, like the laser buff
 
 // Power-up categories - weapon buffs are mutually exclusive with each other, but stack
 // alongside a shield, health pickups and an ally (you can hold a laser AND a shield AND
@@ -256,9 +257,13 @@ export default function useSpaceGame () {
     x: 0, y: 0,
     targetX: 0, targetY: 0,
     angle: 180,
-    nextMoveAt: 0,
     nextFireAt: 0,
     radarX: 0.5, radarY: 0.5,
+    // Phaser beam: a straight line drawn from the ally to the enemy it just struck,
+    // held for ALLY_BEAM_DURATION. Endpoints are snapshotted (container coords) at fire time.
+    beamActive: false,
+    beamUntil: 0,
+    beamX1: 0, beamY1: 0, beamX2: 0, beamY2: 0,
   })
   let allyExpiresAt = 0
   const allyRemainingMs = ref(0)
@@ -715,12 +720,14 @@ export default function useSpaceGame () {
     }
   }
 
-  const damageEnemy = (enemy, projectile) => {
-    projectile.state = PROJECTILE_STATE.HIT
+  // The core of a hit landing on an enemy - scoring, health/kill/respawn handling and the
+  // hit/kill feedback - independent of what dealt it, so both a player projectile
+  // (damageEnemy) and the ally's instantaneous phaser beam can share it.
+  const applyDamageToEnemy = (enemy, amount) => {
     score.value++
     scorePulse.value = true
 
-    enemy.health = Math.max(0, enemy.health - (projectile.damage || 1))
+    enemy.health = Math.max(0, enemy.health - amount)
 
     if (enemy.health === 0) {
       // Destroyed - bigger flash/sound, level up (harder reaction time from here on), then
@@ -768,6 +775,13 @@ export default function useSpaceGame () {
     scorePulseTimeoutId = setTimeout(() => {
       scorePulse.value = false
     }, SCORE_PULSE_DURATION)
+  }
+
+  // A player projectile landing: mark it hit, apply the damage, then clear it after the
+  // hit-burst animation.
+  const damageEnemy = (enemy, projectile) => {
+    projectile.state = PROJECTILE_STATE.HIT
+    applyDamageToEnemy(enemy, projectile.damage || 1)
 
     setTimeout(() => {
       const index = projectiles.indexOf(projectile)
@@ -918,28 +932,24 @@ export default function useSpaceGame () {
     return best
   }
 
-  // The ally's phaser - a fast, hard-hitting, homing shot tagged as PLAYER fire so it runs
-  // through the same collision/scoring/intercept path as the player's own shots (ally kills
-  // count for you, and its shots can even swat down incoming alien fire).
-  const fireAllyPhaser = (enemy) => {
-    const ox = allyCenterX()
-    const oy = allyCenterY()
-    const radians = Math.atan2((enemy.x + enemy.size / 2) - ox, (enemy.y + enemy.size / 2) - oy)
-    playPhaserSound()
+  // The ally's phaser - an instantaneous beam (like the show) rather than a travelling
+  // bolt. It connects immediately, so damage is applied at once and a straight line is
+  // drawn from the ally to the point of impact, held briefly (ALLY_BEAM_DURATION). The
+  // endpoints are snapshotted here so the beam doesn't whip around as both ships keep moving.
+  const fireAllyBeam = (enemy, now) => {
+    const ex = enemy.x + enemy.size / 2
+    const ey = enemy.y + enemy.size / 2
 
-    projectiles.push({
-      id: nextProjectileId++,
-      owner: OWNER.PLAYER,
-      x: ox,
-      y: oy,
-      vx: Math.sin(radians) * ALLY_PHASER_SPEED,
-      vy: Math.cos(radians) * ALLY_PHASER_SPEED,
-      travelled: 0,
-      state: PROJECTILE_STATE.FLYING,
-      phaser: true,
-      damage: ALLY_PHASER_DAMAGE,
-      hitPaddingBonus: LASER_HIT_PADDING_BONUS,
-    })
+    ally.beamX1 = allyCenterX()
+    ally.beamY1 = allyCenterY()
+    ally.beamX2 = ex
+    ally.beamY2 = ey
+    ally.beamActive = true
+    ally.beamUntil = now + ALLY_BEAM_DURATION
+    ally.angle = (Math.atan2(ex - ally.beamX1, ey - ally.beamY1) * (180 / Math.PI) * -1) + 180
+
+    playPhaserSound()
+    applyDamageToEnemy(enemy, ALLY_PHASER_DAMAGE)
   }
 
   // Warps the ally in near the ship, or - if one's already on the field - just refreshes
@@ -961,7 +971,7 @@ export default function useSpaceGame () {
     ally.angle = 180
     ally.active = true
     ally.phase = 'in'
-    ally.nextMoveAt = now + ALLY_MOVE_INTERVAL
+    ally.beamActive = false
     ally.nextFireAt = now + ALLY_WARP_IN_DURATION + 200 // hold fire until it's finished warping in
 
     spawnWarpFlash(allyCenterX(), allyCenterY())
@@ -1243,39 +1253,53 @@ export default function useSpaceGame () {
       }
     }
 
-    // Update the AI ally: ease toward its patrol target, face its heading, plot it on the
-    // radar, and (while fully warped in) repick patrol spots, fire phasers and count down.
+    // Update the AI ally: chase the nearest enemy (holding at a standoff distance), face it,
+    // plot it on the radar, and - while fully warped in - fire a phaser beam whenever a target
+    // is in range, then count down to warp-out.
     if (ally.active) {
+      const acx = allyCenterX()
+      const acy = allyCenterY()
+      const chaseTarget = ally.phase === 'active' ? nearestVisibleEnemy(acx, acy) : null
+
+      if (chaseTarget) {
+        // Aim for a point ALLY_STANDOFF away from the enemy, on the ally's current side of
+        // it, so the ally closes in but holds its distance rather than piling on top.
+        const ex = chaseTarget.x + chaseTarget.size / 2
+        const ey = chaseTarget.y + chaseTarget.size / 2
+        const dx = acx - ex
+        const dy = acy - ey
+        const dist = Math.hypot(dx, dy) || 1
+        ally.targetX = clamp(ex + (dx / dist) * ALLY_STANDOFF - ALLY_SIZE / 2, 0, Math.max(radarW - ALLY_SIZE, 0))
+        ally.targetY = clamp(ey + (dy / dist) * ALLY_STANDOFF - (ALLY_SIZE * 1.2) / 2, 0, Math.max(radarH - ALLY_SIZE * 1.2, 0))
+        // Face the enemy it's engaging (rather than its travel direction).
+        ally.angle = (Math.atan2(ex - acx, ey - acy) * (180 / Math.PI) * -1) + 180
+      }
+
       const adx = ally.targetX - ally.x
       const ady = ally.targetY - ally.y
-      if (Math.hypot(adx, ady) > ARRIVE_THRESHOLD) {
+      const moving = Math.hypot(adx, ady) > ARRIVE_THRESHOLD
+      if (moving) {
         const t = 1 - Math.exp(-ALLY_FOLLOW_RATE * dt)
         ally.x += adx * t
         ally.y += ady * t
-        ally.angle = (Math.atan2(adx, ady) * (180 / Math.PI) * -1) + 180
+        if (!chaseTarget) ally.angle = (Math.atan2(adx, ady) * (180 / Math.PI) * -1) + 180
       }
 
       ally.radarX = clamp(allyCenterX() / radarW, 0, 1)
       ally.radarY = clamp(allyCenterY() / radarH, 0, 1)
 
-      if (ally.phase === 'active') {
-        // Patrol - drift to a fresh spot in the upper 70% of the field on its own timer.
-        if (time >= ally.nextMoveAt) {
-          ally.nextMoveAt = time + ALLY_MOVE_INTERVAL * (0.6 + Math.random() * 0.8)
-          const w = container.value.offsetWidth
-          const h = container.value.offsetHeight
-          ally.targetX = clamp(Math.random() * w, 0, Math.max(w - ALLY_SIZE, 0))
-          ally.targetY = clamp(Math.random() * h * 0.7, 0, Math.max(h - ALLY_SIZE * 1.2, 0))
-        }
+      if (ally.beamActive && time >= ally.beamUntil) ally.beamActive = false
 
-        // Auto-fire a homing phaser at the nearest enemy; recheck sooner if none in range.
-        if (time >= ally.nextFireAt) {
-          const target = nearestVisibleEnemy(allyCenterX(), allyCenterY())
-          if (target) {
-            fireAllyPhaser(target)
+      if (ally.phase === 'active') {
+        // Fire a phaser beam at the nearest enemy, but only once it's within range; otherwise
+        // keep closing the distance and recheck shortly.
+        if (time >= ally.nextFireAt && chaseTarget) {
+          const inRange = Math.hypot((chaseTarget.x + chaseTarget.size / 2) - acx, (chaseTarget.y + chaseTarget.size / 2) - acy) <= ALLY_ENGAGE_RANGE
+          if (inRange) {
+            fireAllyBeam(chaseTarget, time)
             ally.nextFireAt = time + ALLY_FIRE_COOLDOWN
           } else {
-            ally.nextFireAt = time + 300
+            ally.nextFireAt = time + 150
           }
         }
 
@@ -1308,7 +1332,7 @@ export default function useSpaceGame () {
         }
         if (nearest) {
           let turnRate = 0
-          if (projectile.laser || projectile.phaser) {
+          if (projectile.laser) {
             turnRate = LASER_HOMING_TURN_RATE
           } else if (nearestDist <= REGULAR_HOMING_RADIUS) {
             turnRate = REGULAR_HOMING_TURN_RATE

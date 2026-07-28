@@ -1,5 +1,5 @@
 <template>
-  <div class="weapon-bolt" :class="[`weapon-bolt--${state}`, `weapon-bolt--${owner}`, {'weapon-bolt--laser': laser, 'weapon-bolt--phaser': phaser}]" :style="style"></div>
+  <div class="weapon-bolt" :class="[`weapon-bolt--${state}`, `weapon-bolt--${owner}`, {'weapon-bolt--laser': laser}]" :style="style"></div>
 </template>
 
 <script>
@@ -13,7 +13,6 @@ export default {
     state: { type: String, default: 'flying' },
     owner: { type: String, default: 'player' },
     laser: { type: Boolean, default: false },
-    phaser: { type: Boolean, default: false },
   },
   setup (props) {
     const style = computed(() => ({
@@ -70,15 +69,6 @@ export default {
   height: 16px;
   background: #ecfeff;
   box-shadow: 0 0 8px 3px rgba(103, 232, 249, 0.95), 0 0 16px 6px rgba(34, 211, 238, 0.7);
-}
-
-/* Ally phaser: a hot orange-white bolt, distinct from the player's red shots and the
-   laser buff's cyan. Combined selector so hit/miss state variants still override it. */
-.weapon-bolt--phaser {
-  width: 15px;
-  height: 15px;
-  background: #fff7ed;
-  box-shadow: 0 0 8px 3px rgba(251, 146, 60, 0.95), 0 0 16px 6px rgba(249, 115, 22, 0.7);
 }
 
 .weapon-bolt--intercepted {

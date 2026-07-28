@@ -43,7 +43,14 @@
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
       <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit, 'ship-shielded': shieldActive}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
-      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser" :phaser="projectile.phaser"/>
+      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser"/>
+
+      <!-- Ally phaser beam: a straight line from the ally to the enemy it struck. The SVG has
+           no viewBox, so its user units are CSS pixels (= container coords), letting us plot
+           the snapshotted endpoints directly. -->
+      <svg v-if="ally.beamActive" class="phaser-beam" width="100%" height="100%" preserveAspectRatio="none">
+        <line :x1="ally.beamX1" :y1="ally.beamY1" :x2="ally.beamX2" :y2="ally.beamY2" class="phaser-beam-line"/>
+      </svg>
 
       <div
           v-if="ally.active"
@@ -374,6 +381,42 @@ export default {
 .ally-body {
   width: 100%;
   height: 100%;
+}
+
+/* Ally phaser beam overlay - covers the whole play area; the line coords are container
+   pixels. A quick zap-in then fade, matching ALLY_BEAM_DURATION (0.22s). */
+.phaser-beam {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 18;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.phaser-beam-line {
+  stroke: #fdba74;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px #fb923c) drop-shadow(0 0 8px rgba(249, 115, 22, 0.8));
+  animation: phaser-beam-zap 0.22s ease-out forwards;
+}
+
+@keyframes phaser-beam-zap {
+  0% {
+    opacity: 0.2;
+    stroke-width: 6;
+  }
+  25% {
+    opacity: 1;
+    stroke-width: 4;
+  }
+  100% {
+    opacity: 0;
+    stroke-width: 2;
+  }
 }
 
 .ally--warp-in {
