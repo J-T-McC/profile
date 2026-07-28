@@ -191,6 +191,32 @@ resources), mute, and best-score persistence.
 - Deliverable: overlays layered on canvas; clean lifecycle with no leaks.
 - **Token estimate: ~50k**
 
+**Status: ✅ DONE.** Mostly verification; one integration cleanup.
+
+- Overlay layering (re-verified after the canvas → `z-index: 0` change): modals
+  (`position: fixed; z-index: 9999`, teleported) sit above everything; HUD/radar/
+  hint (`z-10`), warp-flash (z18) and ship-explosion (z22) are positive-z, above the
+  canvas; UFO health bars (auto-z, later in DOM) paint above the canvas via tree
+  order — actually a fix vs the Phase 2 `z-index: 2` canvas that sat over them.
+- Lifecycle/teardown audit (no leaks): `stop()` cancels rAF, disconnects the
+  ResizeObserver, disposes every material/geometry/texture, and calls
+  `renderer.dispose()` + `forceContextLoss()` so repeated alien-mode toggles don't
+  exhaust WebGL contexts. The stage holds no event listeners. Mute and best-score
+  persistence live in `useLocalStore`/`useSpaceGame`, untouched by the migration.
+- Integration cleanup: removed the wiring the port orphaned in `History.vue`
+  (`ship`, `shipPos`, `shipHit`, `shieldActive`, `moveShip`, `ufoClicked`,
+  `allySize` no longer bound in the template; `projectiles`/`getShipRenderState`
+  kept only as stage args, dropped from the returned object).
+- Deferred to Phase 6: `useSpaceGame` still declares a dead `ship` ref and writes
+  the now-unread `shipPos` each frame — harmless, cleaned up there with the dead CSS.
+- **Bugfix found in QA:** dying crashed the whole section. Root cause was a Vue
+  `<teleport to="#about">` for the arcade modals — teleporting *into* the same
+  reactive subtree that now holds the WebGL canvas; the death-driven `gameState`
+  change re-patched the teleport and threw `Cannot read properties of null
+  (reading 'nextSibling')`, tearing down `#about`. Fixed by dropping the teleport
+  and rendering the modals as plain `position: fixed` children of `#about` (still
+  centred + fullscreen-visible, no teleport patching to crash).
+
 ## Phase 6 — Polish, perf, and cleanup
 **Goal:** Remove now-dead scoped CSS and unused SVG components, profile frame
 cost, cap devicePixelRatio, dispose geometries/materials/textures on teardown,

@@ -62,39 +62,7 @@
         </div>
       </template>
 
-      <!-- 8-bit continue/restart + game-over screens. Teleported to #about (the element that
-           goes fullscreen) rather than <body>: they're position:fixed so they still centre in
-           the viewport, but staying inside the fullscreen subtree means they also show while
-           fullscreen (the fullscreen top layer hides anything outside that element). -->
-      <teleport to="#about">
-        <div v-if="gameState === GAME_STATE.PROMPT" class="arcade-modal">
-          <div class="arcade-panel">
-            <div class="arcade-title">SHIP DESTROYED</div>
-            <div class="arcade-line">
-              LIVES LEFT
-              <span class="tracking-widest ml-1">
-                <span v-for="n in maxLives" :key="n" :class="n <= lives ? 'text-green-400' : 'text-gray-600'">▲</span>
-              </span>
-            </div>
-            <div class="arcade-line arcade-blink">CONTINUE?</div>
-            <div class="arcade-actions">
-              <button type="button" class="arcade-btn" @click="continueGame">CONTINUE</button>
-              <button type="button" class="arcade-btn arcade-btn--secondary" @click="restartGame">RESTART</button>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="gameState === GAME_STATE.GAME_OVER" class="arcade-modal">
-          <div class="arcade-panel">
-            <div class="arcade-title arcade-title--over">GAME OVER</div>
-            <div class="arcade-line">SCORE {{ score }}</div>
-            <div class="arcade-line">BEST {{ bestScore }}</div>
-            <div class="arcade-actions">
-              <button type="button" class="arcade-btn arcade-btn--danger" @click="restartGame">PLAY AGAIN</button>
-            </div>
-          </div>
-        </div>
-      </teleport>
+      <!-- Continue / game-over modals render below, as direct children of #about. -->
 
     </div>
     <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500" :class="{'cards-hidden': isFullscreen}">
@@ -106,6 +74,40 @@
           :delay="i">
       </card-row>
     </div>
+
+    <!-- 8-bit continue/restart + game-over screens. Direct children of #about (the element
+         that goes fullscreen) and position:fixed, so they centre on the viewport and still
+         show in fullscreen. NOT teleported: teleporting into this same reactive subtree
+         crashed Vue's patcher (nextSibling of null) on the death-driven state change. -->
+    <template v-if="mode.isAlienMode.value && !isMobileOnly">
+      <div v-if="gameState === GAME_STATE.PROMPT" class="arcade-modal">
+        <div class="arcade-panel">
+          <div class="arcade-title">SHIP DESTROYED</div>
+          <div class="arcade-line">
+            LIVES LEFT
+            <span class="tracking-widest ml-1">
+              <span v-for="n in maxLives" :key="n" :class="n <= lives ? 'text-green-400' : 'text-gray-600'">▲</span>
+            </span>
+          </div>
+          <div class="arcade-line arcade-blink">CONTINUE?</div>
+          <div class="arcade-actions">
+            <button type="button" class="arcade-btn" @click="continueGame">CONTINUE</button>
+            <button type="button" class="arcade-btn arcade-btn--secondary" @click="restartGame">RESTART</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="gameState === GAME_STATE.GAME_OVER" class="arcade-modal">
+        <div class="arcade-panel">
+          <div class="arcade-title arcade-title--over">GAME OVER</div>
+          <div class="arcade-line">SCORE {{ score }}</div>
+          <div class="arcade-line">BEST {{ bestScore }}</div>
+          <div class="arcade-actions">
+            <button type="button" class="arcade-btn arcade-btn--danger" @click="restartGame">PLAY AGAIN</button>
+          </div>
+        </div>
+      </div>
+    </template>
   </div>
   <section-break
       gradient-from="from-purple-500 dark:from-blue-900"
@@ -136,10 +138,8 @@ export default {
 
     const {
       container,
-      ship,
       score,
       bestScore,
-      shipHit,
       scorePulse,
       hintVisible,
       muted,
@@ -152,9 +152,7 @@ export default {
       warpFlashes,
       powerUps,
       activeBuffs,
-      shieldActive,
       ally,
-      ALLY_SIZE,
       playerHealthRatio,
       playerHealthColor,
       lives,
@@ -164,11 +162,8 @@ export default {
       continueGame,
       restartGame,
       radarShip,
-      shipPos,
       rotateShip,
-      moveShip,
       onKeyDown,
-      ufoClicked,
       handleClick,
       getShipRenderState,
     } = useSpaceGame(mode.isAlienMode)
@@ -229,12 +224,8 @@ export default {
       isFullscreen,
       toggleFullscreen,
       stageCanvas,
-      ufoClicked,
       rotateShip,
-      moveShip,
       handleClick,
-      shipPos,
-      ship,
       score,
       bestScore,
       muted,
@@ -243,13 +234,10 @@ export default {
       enemies,
       enemyHealthRatio,
       healthColor,
-      projectiles,
       warpFlashes,
       powerUps,
       activeBuffs,
-      shieldActive,
       ally,
-      allySize: ALLY_SIZE,
       playerHealthRatio,
       playerHealthColor,
       lives,
@@ -260,7 +248,6 @@ export default {
       restartGame,
       GAME_STATE,
       radarShip,
-      shipHit,
       scorePulse,
       hintVisible,
       container,
