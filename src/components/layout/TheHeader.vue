@@ -68,10 +68,12 @@
             <SvgGithub class="w-5 inline"/>
           </a>
 
-          <SvgMoon @click="mode.toggle()" v-if="mode.isDarkMode.value"
-                   class="select-none ml-3 w-7 h-7 inline cursor-pointer"/>
-          <SvgSun @click="mode.toggle()" v-if="!mode.isDarkMode.value"
+          <SvgSun @click="mode.toggle()" v-if="mode.current.value === 'light'"
                   class="select-none ml-3 w-7 h-7 inline cursor-pointer"/>
+          <SvgMoon @click="mode.toggle()" v-if="mode.current.value === 'dark'"
+                   class="select-none ml-3 w-7 h-7 inline cursor-pointer"/>
+          <SvgAlien @click="mode.toggle()" v-if="mode.current.value === 'alien'"
+                    class="select-none ml-3 w-7 h-7 inline cursor-pointer"/>
         </div>
       </div>
 
@@ -87,11 +89,12 @@ import SvgGithub from '@/components/icons/SvgGithub'
 import SvgLinkedIn from '@/components/icons/SvgLinkedIn'
 import SvgSun from '@/components/icons/SvgSun'
 import SvgMoon from '@/components/icons/SvgMoon'
+import SvgAlien from '@/components/icons/SvgAlien'
 import useDarkMode from '@/hooks/useDarkMode'
 
 export default {
   name: 'Header',
-  components: { SvgMoon, SvgSun, SvgLinkedIn, SvgGithub, SvgLogo, SvgMenu },
+  components: { SvgMoon, SvgSun, SvgAlien, SvgLinkedIn, SvgGithub, SvgLogo, SvgMenu },
   setup () {
     const open = ref(false)
     const toggle = () => {

@@ -1,4 +1,4 @@
-import { ref, reactive, computed, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import useLocalStore from '@/hooks/useLocalStore'
 
 const UFO_MAX_SIZE = 75
@@ -162,7 +162,7 @@ export const POWERUP_STATE = {
   COLLECTED: 'collected',
 }
 
-export default function useSpaceGame () {
+export default function useSpaceGame (isActive) {
   const container = ref(null)
   const ship = ref(null)
 
@@ -1440,11 +1440,9 @@ export default function useSpaceGame () {
     rafId = requestAnimationFrame(tick)
   }
 
-  syncEnemyCount()
-  rafId = requestAnimationFrame(tick)
-  schedulePowerUpSpawn()
+  // --- Lifecycle: the game only runs while alien mode is active --------------------------
 
-  onUnmounted(() => {
+  const clearAllTimers = () => {
     clearTimeout(scorePulseTimeoutId)
     clearTimeout(warpSettleTimeoutId)
     clearTimeout(shipHitTimeoutId)
@@ -1455,8 +1453,79 @@ export default function useSpaceGame () {
       clearTimeout(enemy.destroyedTimeoutId)
       clearTimeout(enemy.respawnTimeoutId)
     })
+  }
+
+  // Wipes all in-play state back to a fresh game (the best score is kept - it's persisted).
+  const resetGame = () => {
+    clearAllTimers()
+
+    projectiles.splice(0)
+    warpFlashes.splice(0)
+    powerUps.splice(0)
+    enemies.splice(0)
+
+    score.value = 0
+    level.value = 1
+    playerHealth.value = PLAYER_MAX_HEALTH
+    scorePulse.value = false
+    shipHit.value = false
+    hintVisible.value = true
+
+    activeWeaponBuff.value = null
+    weaponBuffRemainingMs.value = 0
+    shieldActive.value = false
+    shieldRemainingMs.value = 0
+
+    ally.active = false
+    ally.phase = 'idle'
+    ally.beamActive = false
+    allyRemainingMs.value = 0
+
+    shipX = 0
+    shipY = 0
+    shipTargetX = 0
+    shipTargetY = 0
+    shipStretch = 1
+    shipAngle.value = 0
+    hasFacing = false
+    lastPointerX = null
+    lastPointerY = null
+    lastFireTime = 0
+    lastFrameTime = null
+    shipPos.left = '0px'
+    shipPos.top = '0px'
+    applyShipTransform()
+  }
+
+  // Mounts a fresh game and starts its loop/timers.
+  const startGame = () => {
+    resetGame()
+    syncEnemyCount()
+    schedulePowerUpSpawn()
+    rafId = requestAnimationFrame(tick)
+  }
+
+  // Tears everything down - cancels the loop, clears every timer and parks the audio.
+  const stopGame = () => {
     if (rafId) cancelAnimationFrame(rafId)
-  })
+    rafId = null
+    clearAllTimers()
+    if (audioCtx && audioCtx.state === 'running') audioCtx.suspend()
+  }
+
+  // Drive the loop off alien mode: a fresh game mounts on entry, and it fully tears down on
+  // exit (so it isn't burning frames/timers/sound while the game isn't even visible). Falls
+  // back to always-on if no active flag was supplied.
+  if (isActive) {
+    watch(isActive, (active) => {
+      if (active) startGame()
+      else stopGame()
+    }, { immediate: true })
+  } else {
+    startGame()
+  }
+
+  onUnmounted(stopGame)
 
   return {
     container,

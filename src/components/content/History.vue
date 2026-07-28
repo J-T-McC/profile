@@ -5,10 +5,10 @@
       gradient-to="to-blue-500"
       animation="animate-gradient-xy">
   </section-break>
-  <div id="about" class="relative" ref="container" :class="{'select-none': mode.isDarkMode.value && !isMobileOnly}">
+  <div id="about" class="relative" ref="container" :class="{'select-none': mode.isAlienMode.value && !isMobileOnly}">
     <div
         class="hidden lg:block h-full w-full absolute top-0 left-0"
-        v-if="mode.isDarkMode.value && !isMobileOnly"
+        v-if="mode.isAlienMode.value && !isMobileOnly"
         tabindex="0"
         @mousemove="rotateShip" @click="moveShip">
       <!-- Full-width sticky row: score group pinned left, radar pinned right. The row
@@ -85,7 +85,7 @@
       </template>
 
     </div>
-    <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500" :class="{'cards-hidden': isFullscreen}">
+    <div class="lg:bg-gradient-to-r from-white via-white to-gray-200 dark:from-gray-900 dark:via-gray-900 dark:to-gray-800 pt-6 lg:pt-0 dark:bg-gray-900 z-50 pb-5 lg:pb-0 transition-colors duration-500" :class="{'cards-hidden': isFullscreen}">
       <card-row
           v-for="(card, i) in cards"
           v-bind:key="card"
@@ -156,7 +156,7 @@ export default {
       moveShip,
       onKeyDown,
       ufoClicked,
-    } = useSpaceGame()
+    } = useSpaceGame(mode.isAlienMode)
 
     // Bound on window (rather than just the small game overlay) so a Space press still
     // reaches the game - and gets its default page-scroll prevented - no matter what
@@ -165,7 +165,7 @@ export default {
     // focused descendant never saw those keydowns at all. No-ops entirely when the game
     // isn't active, or when a real text field is focused elsewhere on the page.
     const onWindowKeyDown = (event) => {
-      if (!mode.isDarkMode.value || isMobileOnly) return
+      if (!mode.isAlienMode.value || isMobileOnly) return
 
       const targetTag = event.target?.tagName
       if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || event.target?.isContentEditable) return
