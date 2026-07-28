@@ -35,6 +35,7 @@
           <div class="radar-blip radar-blip--me" :style="{left: (radarShip.x * 100) + '%', top: (radarShip.y * 100) + '%'}"></div>
           <div v-for="enemy in enemies" :key="'radar-e-' + enemy.id" v-show="enemy.visible" class="radar-blip radar-blip--enemy" :style="{left: (enemy.radarX * 100) + '%', top: (enemy.radarY * 100) + '%'}"></div>
           <div v-for="p in powerUps" :key="'radar-' + p.id" v-show="p.state === POWERUP_STATE.FLOATING" class="radar-blip radar-blip--bonus" :style="{left: (p.radarX * 100) + '%', top: (p.radarY * 100) + '%'}"></div>
+          <div v-if="ally.active" class="radar-blip radar-blip--ally" :style="{left: (ally.radarX * 100) + '%', top: (ally.radarY * 100) + '%'}"></div>
         </div>
       </div>
       <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
@@ -42,7 +43,17 @@
       <div class="twinkling z-0 absolute top-0 left-0 w-full h-full"></div>
       <div v-for="flash in warpFlashes" :key="flash.id" class="warp-flash" :class="{'warp-flash--active': flash.active}" :style="{top: flash.y + 'px', left: flash.x + 'px'}"></div>
       <img src="https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png" alt="ship" ref="ship" :style="shipPos" :class="{'ship-hit': shipHit, 'ship-shielded': shieldActive}" class="block ship absolute w-10 h-10 z-20 bg-white select-none"/>
-      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser"/>
+      <SvgWeapon v-for="projectile in projectiles" :key="projectile.id" :x="projectile.x" :y="projectile.y" :state="projectile.state" :owner="projectile.owner" :laser="projectile.laser" :phaser="projectile.phaser"/>
+
+      <div
+          v-if="ally.active"
+          class="ally"
+          :class="{'ally--warp-in': ally.phase === 'in', 'ally--warp-out': ally.phase === 'out'}"
+          :style="{top: ally.y + 'px', left: ally.x + 'px', width: allySize + 'px', height: (allySize * 1.2) + 'px'}">
+        <div class="ally-body" :style="{transform: 'rotate(' + ally.angle + 'deg)'}">
+          <svg-enterprise/>
+        </div>
+      </div>
 
       <div
           v-for="powerUp in powerUps"
@@ -94,12 +105,14 @@ import useSpaceGame, { POWERUP_STATE } from '@/hooks/useSpaceGame'
 import SvgUFO from '@/components/icons/SvgUFO'
 import { isMobileOnly } from 'mobile-device-detect'
 import SvgWeapon from '@/components/icons/SvgWeapon'
+import SvgEnterprise from '@/components/icons/SvgEnterprise'
 import { onMounted, onUnmounted, ref } from 'vue'
 
 export default {
   name: 'History',
   components: {
     SvgWeapon,
+    SvgEnterprise,
     SvgUFO,
     CardRow,
     SectionBreak
@@ -126,6 +139,8 @@ export default {
       powerUps,
       activeBuffs,
       shieldActive,
+      ally,
+      ALLY_SIZE,
       playerHealthRatio,
       playerHealthColor,
       radarShip,
@@ -205,6 +220,8 @@ export default {
       powerUps,
       activeBuffs,
       shieldActive,
+      ally,
+      allySize: ALLY_SIZE,
       playerHealthRatio,
       playerHealthColor,
       radarShip,
@@ -341,6 +358,57 @@ export default {
 
 #about:fullscreen .game-hud {
   top: 0.75rem;
+}
+
+/* Temporary AI ally. The outer .ally element owns the screen position and the warp
+   animation (scale/opacity), while the inner .ally-body owns the heading rotation - kept
+   on separate elements so the CSS warp animation and the JS-driven rotate transform never
+   fight over a single transform. Durations here must match ALLY_WARP_*_DURATION. */
+.ally {
+  position: absolute;
+  z-index: 17;
+  pointer-events: none;
+  filter: drop-shadow(0 0 5px rgba(165, 180, 252, 0.65));
+}
+
+.ally-body {
+  width: 100%;
+  height: 100%;
+}
+
+.ally--warp-in {
+  animation: ally-warp-in 0.7s ease-out;
+}
+
+.ally--warp-out {
+  animation: ally-warp-out 0.7s ease-in forwards;
+}
+
+@keyframes ally-warp-in {
+  0% {
+    transform: scaleX(0.08) scaleY(2.6);
+    opacity: 0;
+    filter: brightness(3) drop-shadow(0 0 14px #a5b4fc);
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(1) scaleY(1);
+    opacity: 1;
+  }
+}
+
+@keyframes ally-warp-out {
+  0% {
+    transform: scaleX(1) scaleY(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scaleX(0.08) scaleY(2.6);
+    opacity: 0;
+    filter: brightness(3) drop-shadow(0 0 14px #a5b4fc);
+  }
 }
 
 .warp-flash {
@@ -537,6 +605,11 @@ export default {
 .radar-blip--bonus {
   background: #60a5fa;
   box-shadow: 0 0 6px 1px rgba(96, 165, 250, 0.9);
+}
+
+.radar-blip--ally {
+  background: #a5b4fc;
+  box-shadow: 0 0 6px 1px rgba(165, 180, 252, 0.9);
 }
 
 @keyframes radar-blip-pulse {

@@ -89,12 +89,27 @@ const SHIELD_BUFF_DURATION = 8000    // ms a shield pickup blocks all incoming h
 // weight is unchanged; at zero health it's multiplied by (1 + this bonus).
 const LOW_HEALTH_DEFENSIVE_WEIGHT_BONUS = 8
 
+// Temporary AI ally (a Star Trek-style starship) - warps in on pickup, patrols the field
+// and auto-fires homing phasers at the nearest enemy for its duration, then warps out.
+const ALLY_MIN_LEVEL = 6
+const ALLY_DURATION = 12000         // base ms the ally fights before warping out (level-scaled)
+const ALLY_WARP_IN_DURATION = 700   // ms - must match the ally-warp-in CSS animation
+const ALLY_WARP_OUT_DURATION = 700  // ms - must match the ally-warp-out CSS animation
+const ALLY_SIZE = 64                // px width of the starship sprite (height is 1.2x)
+const ALLY_FOLLOW_RATE = 2.5        // 1/s - eased-follow rate toward its patrol target
+const ALLY_MOVE_INTERVAL = 2600     // ms base interval before it repositions to a new patrol spot
+const ALLY_FIRE_COOLDOWN = 700      // ms between phaser shots
+const ALLY_PHASER_SPEED = 1000      // px/s - a touch faster than the player's own shots
+const ALLY_PHASER_DAMAGE = 2        // phasers hit hard, like the laser buff
+
 // Power-up categories - weapon buffs are mutually exclusive with each other, but stack
-// alongside a shield and health pickups (you can hold a laser AND a shield at once).
+// alongside a shield, health pickups and an ally (you can hold a laser AND a shield AND
+// have an ally on the field all at once).
 const POWERUP_CATEGORY = {
   WEAPON: 'weapon',
   SHIELD: 'shield',
   HEALTH: 'health',
+  ALLY: 'ally',
 }
 
 // Floating power-ups. minLevel gates when each first appears; weight biases how often it's
@@ -107,6 +122,7 @@ const POWERUP_TYPES = {
   laser: { minLevel: 8, category: POWERUP_CATEGORY.WEAPON, label: 'L', color: '#34d399', laser: true },
   health: { minLevel: 4, category: POWERUP_CATEGORY.HEALTH, label: '♥', color: '#f87171', weight: 0.5, restore: HEALTH_ITEM_RESTORE },
   shield: { minLevel: 5, category: POWERUP_CATEGORY.SHIELD, label: '⛊', color: '#22d3ee', weight: 0.5, duration: SHIELD_BUFF_DURATION },
+  ally: { minLevel: ALLY_MIN_LEVEL, category: POWERUP_CATEGORY.ALLY, label: 'NCC', color: '#a5b4fc', weight: 0.4, duration: ALLY_DURATION },
 }
 
 // CSS property names written into the reactive ship style object (shipPos). Defined once
@@ -185,6 +201,8 @@ export default function useSpaceGame () {
     shield: 'shield',
     health: 'health',
     hp: 'health',
+    ally: 'ally',
+    enterprise: 'ally',
   }
 
   // Shared green/amber/red mapping for any 0..1 health ratio (the player and each enemy).
@@ -229,6 +247,23 @@ export default function useSpaceGame () {
   const playerHealthRatio = computed(() => playerHealth.value / PLAYER_MAX_HEALTH)
   const playerHealthColor = computed(() => healthColor(playerHealthRatio.value))
 
+  // The temporary AI ally. Position/angle are JS-driven each frame (like the enemies);
+  // `active` gates rendering and `phase` ('in' | 'active' | 'out') drives the warp
+  // animation. Only one is ever on the field; picking up another just refreshes its timer.
+  const ally = reactive({
+    active: false,
+    phase: 'idle',
+    x: 0, y: 0,
+    targetX: 0, targetY: 0,
+    angle: 180,
+    nextMoveAt: 0,
+    nextFireAt: 0,
+    radarX: 0.5, radarY: 0.5,
+  })
+  let allyExpiresAt = 0
+  const allyRemainingMs = ref(0)
+  let allyPhaseTimeoutId = null
+
   // The timed buffs currently showing in the HUD, each as its own countdown badge.
   const activeBuffs = computed(() => {
     const list = []
@@ -239,6 +274,10 @@ export default function useSpaceGame () {
     if (shieldActive.value) {
       const type = POWERUP_TYPES.shield
       list.push({ id: 'shield', label: type.label, color: type.color, seconds: Math.ceil(shieldRemainingMs.value / 1000) })
+    }
+    if (ally.active) {
+      const type = POWERUP_TYPES.ally
+      list.push({ id: 'ally', label: type.label, color: type.color, seconds: Math.ceil(allyRemainingMs.value / 1000) })
     }
     return list
   })
@@ -480,6 +519,40 @@ export default function useSpaceGame () {
       osc.start(startTime)
       osc.stop(startTime + 0.16)
     })
+  }
+
+  // The ally's phaser - a bright, hard-edged descending zap, distinct from the player's
+  // own softer laser and the enemy's coarse sawtooth.
+  const playPhaserSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sawtooth'
+    osc.frequency.setValueAtTime(1400, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(520, ctx.currentTime + 0.14)
+    gain.gain.setValueAtTime(0.07, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.16)
+  }
+
+  // A rising, shimmering whoosh for the ally warping in or out.
+  const playWarpSound = () => {
+    const ctx = getAudioContext()
+    if (!ctx) return
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(180, ctx.currentTime)
+    osc.frequency.exponentialRampToValueAtTime(1600, ctx.currentTime + 0.35)
+    gain.gain.setValueAtTime(0.001, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.09, ctx.currentTime + 0.1)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
+    osc.connect(gain).connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.42)
   }
 
   // How many enemies should be on the field at a given level - one to start, plus one more
@@ -828,6 +901,91 @@ export default function useSpaceGame () {
     })
   }
 
+  // --- Temporary AI ally (starship) --------------------------------------------------
+
+  const allyCenterX = () => ally.x + ALLY_SIZE / 2
+  const allyCenterY = () => ally.y + (ALLY_SIZE * 1.2) / 2
+
+  // The live enemy nearest a point, used by the ally to pick a phaser target.
+  const nearestVisibleEnemy = (x, y) => {
+    let best = null
+    let bestDist = Infinity
+    for (const enemy of enemies) {
+      if (!enemy.visible || enemy.health <= 0) continue
+      const d = Math.hypot((enemy.x + enemy.size / 2) - x, (enemy.y + enemy.size / 2) - y)
+      if (d < bestDist) { bestDist = d; best = enemy }
+    }
+    return best
+  }
+
+  // The ally's phaser - a fast, hard-hitting, homing shot tagged as PLAYER fire so it runs
+  // through the same collision/scoring/intercept path as the player's own shots (ally kills
+  // count for you, and its shots can even swat down incoming alien fire).
+  const fireAllyPhaser = (enemy) => {
+    const ox = allyCenterX()
+    const oy = allyCenterY()
+    const radians = Math.atan2((enemy.x + enemy.size / 2) - ox, (enemy.y + enemy.size / 2) - oy)
+    playPhaserSound()
+
+    projectiles.push({
+      id: nextProjectileId++,
+      owner: OWNER.PLAYER,
+      x: ox,
+      y: oy,
+      vx: Math.sin(radians) * ALLY_PHASER_SPEED,
+      vy: Math.cos(radians) * ALLY_PHASER_SPEED,
+      travelled: 0,
+      state: PROJECTILE_STATE.FLYING,
+      phaser: true,
+      damage: ALLY_PHASER_DAMAGE,
+      hitPaddingBonus: LASER_HIT_PADDING_BONUS,
+    })
+  }
+
+  // Warps the ally in near the ship, or - if one's already on the field - just refreshes
+  // its timer instead of re-warping (avoids a jarring re-entry flicker on a repeat pickup).
+  const summonAlly = (now = performance.now()) => {
+    if (!container.value) return
+    const duration = scaledBuffDuration(ALLY_DURATION)
+    allyExpiresAt = now + duration
+    allyRemainingMs.value = duration
+
+    if (ally.active) return
+
+    const w = container.value.offsetWidth
+    const h = container.value.offsetHeight
+    ally.x = clamp(shipX + 90, 0, Math.max(w - ALLY_SIZE, 0))
+    ally.y = clamp(shipY - 90, 0, Math.max(h - ALLY_SIZE * 1.2, 0))
+    ally.targetX = ally.x
+    ally.targetY = ally.y
+    ally.angle = 180
+    ally.active = true
+    ally.phase = 'in'
+    ally.nextMoveAt = now + ALLY_MOVE_INTERVAL
+    ally.nextFireAt = now + ALLY_WARP_IN_DURATION + 200 // hold fire until it's finished warping in
+
+    spawnWarpFlash(allyCenterX(), allyCenterY())
+    playWarpSound()
+
+    clearTimeout(allyPhaseTimeoutId)
+    allyPhaseTimeoutId = setTimeout(() => {
+      if (ally.active) ally.phase = 'active'
+    }, ALLY_WARP_IN_DURATION)
+  }
+
+  // Plays the warp-out animation, then removes the ally once it's finished.
+  const beginAllyWarpOut = () => {
+    ally.phase = 'out'
+    spawnWarpFlash(allyCenterX(), allyCenterY())
+    playWarpSound()
+
+    clearTimeout(allyPhaseTimeoutId)
+    allyPhaseTimeoutId = setTimeout(() => {
+      ally.active = false
+      ally.phase = 'idle'
+    }, ALLY_WARP_OUT_DURATION)
+  }
+
   // Drifts a weapon power-up in from one side of the screen - removed automatically
   // after POWERUP_LIFESPAN if the player never flies into it.
   const spawnPowerUp = () => {
@@ -902,6 +1060,9 @@ export default function useSpaceGame () {
       // Instant restore, capped at full health.
       playerHealth.value = Math.min(PLAYER_MAX_HEALTH, playerHealth.value + type.restore)
       playHealSound()
+    } else if (type.category === POWERUP_CATEGORY.ALLY) {
+      // Warps in a temporary AI ally (or refreshes the current one's timer).
+      summonAlly(now)
     }
   }
 
@@ -1082,6 +1243,48 @@ export default function useSpaceGame () {
       }
     }
 
+    // Update the AI ally: ease toward its patrol target, face its heading, plot it on the
+    // radar, and (while fully warped in) repick patrol spots, fire phasers and count down.
+    if (ally.active) {
+      const adx = ally.targetX - ally.x
+      const ady = ally.targetY - ally.y
+      if (Math.hypot(adx, ady) > ARRIVE_THRESHOLD) {
+        const t = 1 - Math.exp(-ALLY_FOLLOW_RATE * dt)
+        ally.x += adx * t
+        ally.y += ady * t
+        ally.angle = (Math.atan2(adx, ady) * (180 / Math.PI) * -1) + 180
+      }
+
+      ally.radarX = clamp(allyCenterX() / radarW, 0, 1)
+      ally.radarY = clamp(allyCenterY() / radarH, 0, 1)
+
+      if (ally.phase === 'active') {
+        // Patrol - drift to a fresh spot in the upper 70% of the field on its own timer.
+        if (time >= ally.nextMoveAt) {
+          ally.nextMoveAt = time + ALLY_MOVE_INTERVAL * (0.6 + Math.random() * 0.8)
+          const w = container.value.offsetWidth
+          const h = container.value.offsetHeight
+          ally.targetX = clamp(Math.random() * w, 0, Math.max(w - ALLY_SIZE, 0))
+          ally.targetY = clamp(Math.random() * h * 0.7, 0, Math.max(h - ALLY_SIZE * 1.2, 0))
+        }
+
+        // Auto-fire a homing phaser at the nearest enemy; recheck sooner if none in range.
+        if (time >= ally.nextFireAt) {
+          const target = nearestVisibleEnemy(allyCenterX(), allyCenterY())
+          if (target) {
+            fireAllyPhaser(target)
+            ally.nextFireAt = time + ALLY_FIRE_COOLDOWN
+          } else {
+            ally.nextFireAt = time + 300
+          }
+        }
+
+        // Count down and warp out once its time is up.
+        allyRemainingMs.value = Math.max(0, allyExpiresAt - time)
+        if (time >= allyExpiresAt) beginAllyWarpOut()
+      }
+    }
+
     // Advance in-flight projectiles. Player shots home-in on / collide with the nearest live
     // enemy; enemy return fire aims at (and collides with) the ship.
     const enemyCircles = enemies
@@ -1105,7 +1308,7 @@ export default function useSpaceGame () {
         }
         if (nearest) {
           let turnRate = 0
-          if (projectile.laser) {
+          if (projectile.laser || projectile.phaser) {
             turnRate = LASER_HOMING_TURN_RATE
           } else if (nearestDist <= REGULAR_HOMING_RADIUS) {
             turnRate = REGULAR_HOMING_TURN_RATE
@@ -1222,6 +1425,7 @@ export default function useSpaceGame () {
     clearTimeout(warpSettleTimeoutId)
     clearTimeout(shipHitTimeoutId)
     clearTimeout(powerUpSpawnTimeoutId)
+    clearTimeout(allyPhaseTimeoutId)
     enemies.forEach((enemy) => {
       clearTimeout(enemy.hitTimeoutId)
       clearTimeout(enemy.destroyedTimeoutId)
@@ -1249,6 +1453,8 @@ export default function useSpaceGame () {
     powerUps,
     activeBuffs,
     shieldActive,
+    ally,
+    ALLY_SIZE,
     playerHealth,
     playerHealthRatio,
     playerHealthColor,
