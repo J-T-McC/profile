@@ -24,6 +24,11 @@ const UFO_RESPAWN_DELAY = 2500      // ms the UFO stays gone after being destroy
 const KILL_BONUS_SCORE = 5          // extra points awarded on top of the +1 for the killing hit
 const LEVEL_DIFFICULTY_CAP = 10     // level at which reaction-time difficulty maxes out
 const ENEMY_WANDER_INTERVAL = 10000 // ms - max idle interval before an enemy drifts to a new spot
+const ENEMY_WANDER_STEP = 200       // px - idle wander drifts to a spot within this of the current one
+const ENEMY_WANDER_FOLLOW_RATE = 1.1 // 1/s - gentle glide for idle drift (before the level multiplier)
+const ENEMY_DODGE_DISTANCE = 150    // px - how far the cube slips when dodging the cursor
+const ENEMY_DODGE_SIDESTEP = 0.55   // 0..1 - blend toward a perpendicular sidestep so dodges curve
+const ENEMY_DODGE_FOLLOW_RATE = 2.4 // 1/s - quicker but still smooth evasive glide (before the multiplier)
 const LEVELS_PER_NEW_ENEMY = 10     // an additional enemy UFO joins the field every this many levels
 
 // "Reaction time" difficulty knobs - how alert/agile the UFO is, scaled by level from an
@@ -561,7 +566,7 @@ export default function useSpaceGame (isActive) {
   }
 
   // How many enemies should be on the field at a given level - one to start, plus one more
-  // every LEVELS_PER_NEW_ENEMY levels (so a new bad guy joins at level 10, 20, 30, ...).
+  // every LEVELS_PER_NEW_ENEMY levels (so a new bad guy joins at that level, 2x it, 3x it, ...).
   const enemyCountForLevel = (lvl) => 1 + Math.floor(lvl / LEVELS_PER_NEW_ENEMY)
 
   const createEnemy = () => ({
@@ -589,29 +594,60 @@ export default function useSpaceGame (isActive) {
 
   // Re-rolls an enemy's size (depth illusion), speed and next drift target. On the very
   // first placement it snaps straight there rather than gliding in from off-screen.
-  const randomizeEnemy = (enemy) => {
-    if (!container.value) return
+  // Re-rolls only the depth-illusion look (size/brightness/z) + the base follow pace, without
+  // moving the enemy. Used both by randomizeEnemy and by the occasional idle "breathing".
+  const rerollEnemyDepth = (enemy) => {
     const durationSeconds = Math.ceil(Math.random() * 3)
-    const offset = Math.random() < 0.5 ? -100 : 100
-
     const size = Math.ceil(Math.random() * UFO_MAX_SIZE)
     enemy.size = size
     enemy.brightness = Math.max(40, (size / UFO_MAX_SIZE) * 100)
     enemy.zIndex = size >= (UFO_MAX_SIZE * 0.8) ? 12 : 1
     enemy.transitionDuration = durationSeconds + 's'
-    // Match the old hop pace, scaled by the current level's "reaction time".
     enemy.followRate = (3 / durationSeconds) * getUfoSpeedMultiplier()
+  }
 
+  const randomizeEnemy = (enemy) => {
+    if (!container.value) return
+    rerollEnemyDepth(enemy)
+
+    const offset = Math.random() < 0.5 ? -100 : 100
     const containerWidth = container.value.offsetWidth
     const containerHeight = container.value.offsetHeight
-    enemy.targetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - size, 0))
-    enemy.targetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - size, 0))
+    enemy.targetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - enemy.size, 0))
+    enemy.targetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - enemy.size, 0))
 
     if (!enemy.placed) {
       enemy.x = enemy.targetX
       enemy.y = enemy.targetY
       enemy.placed = true
     }
+  }
+
+  // Idle drift: ease toward a spot near the current one (gentle, not a screen-wide hop).
+  const wanderNearby = (enemy, w, h) => {
+    enemy.targetX = clamp(enemy.x + (Math.random() * 2 - 1) * ENEMY_WANDER_STEP, 0, Math.max(w - enemy.size, 0))
+    enemy.targetY = clamp(enemy.y + (Math.random() * 2 - 1) * ENEMY_WANDER_STEP, 0, Math.max(h - enemy.size, 0))
+    enemy.followRate = ENEMY_WANDER_FOLLOW_RATE * getUfoSpeedMultiplier()
+  }
+
+  // Evade: slide a bounded distance away from the cursor, blended with a perpendicular
+  // sidestep (alternating sides) so the dodge curves rather than darting in a straight line.
+  const dodgeCursor = (enemy, w, h) => {
+    const cx = enemy.x + enemy.size / 2
+    const cy = enemy.y + enemy.size / 2
+    let ax = cx - lastPointerX
+    let ay = cy - lastPointerY
+    const len = Math.hypot(ax, ay) || 1
+    ax /= len; ay /= len
+    const side = Math.random() < 0.5 ? 1 : -1
+    let dx = ax * (1 - ENEMY_DODGE_SIDESTEP) + (-ay * side) * ENEMY_DODGE_SIDESTEP
+    let dy = ay * (1 - ENEMY_DODGE_SIDESTEP) + (ax * side) * ENEMY_DODGE_SIDESTEP
+    const dl = Math.hypot(dx, dy) || 1
+    dx /= dl; dy /= dl
+    const dist = ENEMY_DODGE_DISTANCE * (0.7 + Math.random() * 0.6)
+    enemy.targetX = clamp(enemy.x + dx * dist, 0, Math.max(w - enemy.size, 0))
+    enemy.targetY = clamp(enemy.y + dy * dist, 0, Math.max(h - enemy.size, 0))
+    enemy.followRate = ENEMY_DODGE_FOLLOW_RATE * getUfoSpeedMultiplier()
   }
 
   // Grows the live enemy list to match the current level (never shrinks - enemies persist
@@ -1275,18 +1311,21 @@ export default function useSpaceGame (isActive) {
 
       const hitCircle = getEnemyHitCircle(enemy)
 
-      // Idle wander on its own timer.
+      // Idle wander on its own timer: a gentle drift nearby, with the odd depth change so it
+      // still "breathes" in size without a screen-wide hop.
       if (time >= enemy.nextWanderAt) {
-        enemy.nextWanderAt = time + Math.ceil(Math.random() * ENEMY_WANDER_INTERVAL)
-        randomizeEnemy(enemy)
+        enemy.nextWanderAt = time + ENEMY_WANDER_INTERVAL * (0.4 + Math.random() * 0.6)
+        if (Math.random() < 0.5) rerollEnemyDepth(enemy)
+        wanderNearby(enemy, radarW, radarH)
       }
 
       // Flee if the cursor lingers nearby (rate-limited; cooldown/radius scale with level).
+      // A smooth, curving slip away rather than a teleport to a random spot.
       if (lastPointerX !== null && (time - enemy.lastFleeTime) >= getFleeCooldown()) {
         const pointerDistance = Math.hypot(lastPointerX - hitCircle.x, lastPointerY - hitCircle.y)
         if (pointerDistance <= getFleeRadius() + hitCircle.radius) {
           enemy.lastFleeTime = time
-          randomizeEnemy(enemy)
+          dodgeCursor(enemy, radarW, radarH)
         }
       }
 
