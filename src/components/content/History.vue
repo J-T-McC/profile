@@ -54,13 +54,7 @@
 
       <div v-if="shipExplosion.active" class="ship-explosion" :style="{top: shipExplosion.y + 'px', left: shipExplosion.x + 'px'}"></div>
 
-      <!-- UFO bodies render in the Three.js canvas; their health bars stay
-           DOM for now, positioned in the same world/container pixel coordinates. -->
-      <template v-for="enemy in enemies" :key="enemy.id">
-        <div v-show="enemy.visible" class="ufo-health-track" :style="{top: enemy.y + 'px', left: enemy.x + 'px', width: (enemy.size * 0.8) + 'px', filter: 'brightness(' + enemy.brightness + '%)', 'transition-duration': enemy.transitionDuration}">
-          <div class="ufo-health-fill" :style="{width: (enemyHealthRatio(enemy) * 100) + '%', backgroundColor: healthColor(enemyHealthRatio(enemy))}"></div>
-        </div>
-      </template>
+      <!-- UFO bodies and their health bars both render in the Three.js canvas. -->
 
       <!-- Continue / game-over modals render below, as direct children of #about. -->
 
@@ -170,7 +164,7 @@ export default {
 
     // Phase 2: Three.js renderer for the ship, UFOs and projectiles. It polls this
     // game state each frame; gated to alien mode like the game itself.
-    const { stageCanvas } = useThreeStage(mode.isAlienMode, { enemies, projectiles, ally, powerUps, getShipRenderState })
+    const { stageCanvas } = useThreeStage(mode.isAlienMode, { enemies, projectiles, ally, powerUps, getShipRenderState, enemyHealthRatio, healthColor })
 
     // Bound on window (rather than just the small game overlay) so a Space press still
     // reaches the game - and gets its default page-scroll prevented - no matter what
@@ -232,8 +226,6 @@ export default {
       toggleMute,
       level,
       enemies,
-      enemyHealthRatio,
-      healthColor,
       warpFlashes,
       powerUps,
       activeBuffs,
@@ -506,23 +498,6 @@ export default {
 .warp-flash--active {
   transform: translate(-50%, -50%) scale(2);
   opacity: 0;
-}
-
-.ufo-health-track {
-  position: absolute;
-  height: 5px;
-  z-index: 11;
-  background: rgba(0, 0, 0, 0.45);
-  border-radius: 3px;
-  overflow: hidden;
-  transform: translate(-2px, -10px);
-  pointer-events: none;
-  transition-property: width, filter;
-}
-
-.ufo-health-fill {
-  height: 100%;
-  transition: width 0.2s ease-out, background-color 0.2s ease-out;
 }
 
 .player-health-track {

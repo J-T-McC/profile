@@ -49,6 +49,8 @@ const RENDER_ORDER = {
   bg: -11,
   stars: -10,
   twinkle: -9,
+  healthTrack: 15, // above every UFO (their zIndex is 1 or 12)
+  healthFill: 16,
   ally: 17,
   beam: 18,
   powerUp: 19,
@@ -57,6 +59,8 @@ const RENDER_ORDER = {
   shipBack: 24,
   ship: 25,
 } // enemies use their own zIndex (1 or 12)
+
+const HEALTH_BAR_HEIGHT = 5 // px, matches the old .ufo-health-track
 
 // Twinkling drift, matching @keyframes move-twink-back (-10000px, 5000px over 300s).
 const TWINKLE_VX = -10000 / 300 // px/s
@@ -117,7 +121,7 @@ export default function useThreeStage (active, game) {
   let allyGroup = null
   let allyBody = null
   let beamMesh = null
-  const enemyMeshes = new Map() // enemy.id -> Mesh
+  const enemyMeshes = new Map() // enemy.id -> { body, track, fill }
   const boltMeshes = new Map() // projectile.id -> Mesh
   const powerUpMeshes = new Map() // powerUp.id -> Mesh
 
@@ -318,10 +322,15 @@ export default function useThreeStage (active, game) {
     scene.add(beamMesh)
   }
 
-  const makeEnemyMesh = () => {
-    const mesh = new THREE.Mesh(unitGeometry, basicMat({ map: ufoTexture }))
-    scene.add(mesh)
-    return mesh
+  // A UFO plus its health bar (dark track + coloured fill quads).
+  const makeEnemy = () => {
+    const body = new THREE.Mesh(unitGeometry, basicMat({ map: ufoTexture }))
+    const track = new THREE.Mesh(unitGeometry, basicMat({ color: 0x000000, opacity: 0.45 }))
+    track.renderOrder = RENDER_ORDER.healthTrack
+    const fill = new THREE.Mesh(unitGeometry, basicMat({}))
+    fill.renderOrder = RENDER_ORDER.healthFill
+    scene.add(body, track, fill)
+    return { body, track, fill }
   }
 
   const makeBoltMesh = (kind) => {
@@ -428,35 +437,53 @@ export default function useThreeStage (active, game) {
   const reconcileEnemies = (t) => {
     const enemies = game.enemies
     for (const enemy of enemies) {
-      let mesh = enemyMeshes.get(enemy.id)
-      if (!mesh) {
-        mesh = makeEnemyMesh()
-        enemyMeshes.set(enemy.id, mesh)
+      let e = enemyMeshes.get(enemy.id)
+      if (!e) {
+        e = makeEnemy()
+        enemyMeshes.set(enemy.id, e)
       }
-      mesh.visible = enemy.visible
+      const { body, track, fill } = e
+      body.visible = track.visible = fill.visible = enemy.visible
       if (!enemy.visible) {
-        mesh.userData.destroyStart = undefined
+        body.userData.destroyStart = undefined
         continue
       }
-      mesh.position.set(...toScene(enemy.x + enemy.size / 2, enemy.y + enemy.size / 2), 0)
-      mesh.renderOrder = enemy.zIndex
+
+      body.position.set(...toScene(enemy.x + enemy.size / 2, enemy.y + enemy.size / 2), 0)
+      body.renderOrder = enemy.zIndex
+      const dim = Math.min(enemy.brightness / 100, 1) // depth dimming
 
       if (enemy.destroyed) {
-        if (mesh.userData.destroyStart === undefined) mesh.userData.destroyStart = t
-        const p = clamp01((t - mesh.userData.destroyStart) / DESTROY_DURATION)
-        mesh.scale.setScalar(enemy.size * sampleKeyframes(DESTROY_PULSE, p))
-        mesh.material.color.set(UFO_DESTROYED_COLOR)
+        if (body.userData.destroyStart === undefined) body.userData.destroyStart = t
+        const p = clamp01((t - body.userData.destroyStart) / DESTROY_DURATION)
+        body.scale.setScalar(enemy.size * sampleKeyframes(DESTROY_PULSE, p))
+        body.material.color.set(UFO_DESTROYED_COLOR)
       } else {
-        mesh.userData.destroyStart = undefined
-        mesh.scale.set(enemy.size, enemy.size, 1)
-        if (enemy.hit) mesh.material.color.set(UFO_HIT_COLOR)
-        else mesh.material.color.setScalar(Math.min(enemy.brightness / 100, 1)) // depth dimming
+        body.userData.destroyStart = undefined
+        body.scale.set(enemy.size, enemy.size, 1)
+        if (enemy.hit) body.material.color.set(UFO_HIT_COLOR)
+        else body.material.color.setScalar(dim)
       }
+
+      // Health bar just above the UFO (the old CSS anchored it at the enemy's top-left,
+      // translated (-2, -10), width = 0.8 * size). Fill is left-aligned; both dim with depth.
+      const barW = enemy.size * 0.8
+      const barLeft = enemy.x - 2
+      const barCy = enemy.y - 10 + HEALTH_BAR_HEIGHT / 2
+      const ratio = clamp01(game.enemyHealthRatio(enemy))
+      track.position.set(...toScene(barLeft + barW / 2, barCy), 0)
+      track.scale.set(barW, HEALTH_BAR_HEIGHT, 1)
+      const fillW = Math.max(barW * ratio, 0.001)
+      fill.position.set(...toScene(barLeft + fillW / 2, barCy), 0)
+      fill.scale.set(fillW, HEALTH_BAR_HEIGHT, 1)
+      fill.material.color.set(game.healthColor(ratio)).multiplyScalar(dim)
     }
-    for (const [id, mesh] of enemyMeshes) {
-      if (!enemies.some((e) => e.id === id)) {
-        scene.remove(mesh)
-        mesh.material.dispose()
+    for (const [id, e] of enemyMeshes) {
+      if (!enemies.some((en) => en.id === id)) {
+        for (const m of [e.body, e.track, e.fill]) {
+          scene.remove(m)
+          m.material.dispose()
+        }
         enemyMeshes.delete(id)
       }
     }
@@ -601,7 +628,11 @@ export default function useThreeStage (active, game) {
       resizeObserver = null
     }
 
-    for (const mesh of enemyMeshes.values()) mesh.material.dispose()
+    for (const e of enemyMeshes.values()) {
+      e.body.material.dispose()
+      e.track.material.dispose()
+      e.fill.material.dispose()
+    }
     for (const mesh of boltMeshes.values()) mesh.material.dispose()
     for (const mesh of powerUpMeshes.values()) mesh.material.dispose()
     enemyMeshes.clear()
