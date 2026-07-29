@@ -414,6 +414,14 @@ export default function useThreeStage (active, game) {
     const oy = Math.random() * 100
     const oz = Math.random() * 100
 
+    // Dirty-rock palette, blended per vertex: near-black brown base, rust, and a mossy
+    // grey-green. Crevices (noise dents) get darkened for a grimy, worn look.
+    const colors = new Float32Array(pos.count * 3)
+    const cBase = new THREE.Color(0x1c1814)
+    const cRust = new THREE.Color(0x43301f)
+    const cMoss = new THREE.Color(0x2f3327)
+    const col = new THREE.Color()
+
     for (let i = 0; i < pos.count; i++) {
       v.fromBufferAttribute(pos, i) // unit direction
       const nx = v.x; const ny = v.y; const nz = v.z
@@ -425,8 +433,17 @@ export default function useThreeStage (active, game) {
       const r = 1 + d * 0.7
       v.set(nx * ax, ny * ay, nz * az).multiplyScalar(r)
       pos.setXYZ(i, v.x, v.y, v.z)
+
+      // Mottled dirt: a low-frequency noise (offset so it doesn't track the shape) blends
+      // the palette; then darken by crevice depth for fake ambient occlusion.
+      const m = noise.noise(nx * 0.9 + ox + 40, ny * 0.9 + oy + 40, nz * 0.9 + oz + 40) * 0.5 + 0.5
+      col.copy(cBase).lerp(cRust, clamp01(m * 1.5))
+      col.lerp(cMoss, clamp01((m - 0.55) * 1.6))
+      col.multiplyScalar(clamp01(0.5 + d * 0.9)) // dents darker, bumps lighter
+      colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b
     }
     pos.needsUpdate = true
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
     geo.computeVertexNormals()
     return geo
   }
@@ -440,9 +457,9 @@ export default function useThreeStage (active, game) {
     const depth = (sizePx - ASTEROID_MIN_SIZE) / (ASTEROID_MAX_SIZE - ASTEROID_MIN_SIZE) // 0 far .. 1 near
     a.mesh.scale.setScalar(sizePx)
 
-    // Dim/cool the far ones for aerial-perspective depth.
-    const shade = 0.28 + depth * 0.5
-    a.mesh.material.color.setRGB(shade * 0.62, shade * 0.55, shade * 0.5)
+    // Depth tint multiplies the (already dark, dirty) vertex colours - far rocks read
+    // dimmer for aerial-perspective depth.
+    a.mesh.material.color.setScalar(0.55 + depth * 0.45)
 
     const speed = (12 + Math.random() * 20) * (0.5 + depth) // px/s, nearer = faster
     a.vx = dir * speed
@@ -463,8 +480,8 @@ export default function useThreeStage (active, game) {
   const buildAsteroids = () => {
     // Lights only touch the (lit) asteroid material; every other object uses MeshBasicMaterial
     // and ignores them.
-    asteroidAmbient = new THREE.AmbientLight(0x8899bb, 0.9)
-    asteroidLight = new THREE.DirectionalLight(0xffffff, 2.2)
+    asteroidAmbient = new THREE.AmbientLight(0x8899bb, 0.5)
+    asteroidLight = new THREE.DirectionalLight(0xfff2e0, 2.2)
     asteroidLight.position.set(-0.4, 0.7, 1)
     scene.add(asteroidAmbient, asteroidLight)
 
@@ -474,7 +491,7 @@ export default function useThreeStage (active, game) {
         // transparent:true so it sorts with the rest of the scene by renderOrder (the black
         // background quad is itself a transparent mesh); depth test/write on for correct
         // self-occlusion as it tumbles.
-        new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, transparent: true })
+        new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, vertexColors: true, transparent: true })
       )
       mesh.renderOrder = RENDER_ORDER.asteroid
       scene.add(mesh)
