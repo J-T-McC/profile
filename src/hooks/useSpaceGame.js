@@ -905,6 +905,13 @@ export default function useSpaceGame (isActive) {
     }
   }
 
+  // Remove a projectile by id - e.g. it was used up striking a background asteroid. Owned
+  // by the renderer (which handles asteroid collision), so it's exposed for that.
+  const consumeProjectile = (id) => {
+    const index = projectiles.findIndex(p => p.id === id)
+    if (index !== -1) projectiles.splice(index, 1)
+  }
+
   // An enemy's own return shot, aimed at the ship's current position (no lead/prediction,
   // same simple aim model as the player's shots) and a bit slower, so it's dodgeable. Tagged
   // with shooterId so a landed hit heals the specific enemy that fired it. Scheduling is
@@ -1607,6 +1614,7 @@ export default function useSpaceGame (isActive) {
     enemyHealthRatio,
     healthColor,
     projectiles,
+    consumeProjectile,
     warpFlashes,
     powerUps,
     activeBuffs,

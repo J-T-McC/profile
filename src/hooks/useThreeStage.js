@@ -913,9 +913,9 @@ export default function useThreeStage (active, game) {
     }
   }
 
-  // Player bolts shatter drifting asteroids: on overlap, burst rocky debris and recycle the
-  // rock. The bolt is intentionally NOT consumed - asteroids are background decor, so a shot
-  // aimed at a UFO still passes through to hit it.
+  // Player bolts shatter drifting asteroids: on overlap, burst rocky debris, recycle the
+  // rock, and consume the shot - the asteroid blocks it, so a shot is "used up" on the rock
+  // rather than passing through. Enemy fire ignores the rocks.
   const shatterAsteroids = () => {
     const bolts = game.projectiles
     if (!bolts.length) return
@@ -939,7 +939,8 @@ export default function useThreeStage (active, game) {
           })
           addShake(3)
           resetAsteroid(a, false) // send it back off an edge; the debris sells the break
-          break
+          game.consumeProjectile?.(p.id) // the shot is spent on the rock
+          break // this rock is gone and the bolt consumed; move to the next rock
         }
       }
     }

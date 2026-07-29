@@ -123,6 +123,7 @@ export default {
       enemyHealthRatio,
       healthColor,
       projectiles,
+      consumeProjectile,
       warpFlashes,
       powerUps,
       activeBuffs,
@@ -144,7 +145,7 @@ export default {
 
     // Three.js renderer for the ship, UFOs, projectiles, ally, power-ups and health bars.
     // It polls this game state each frame; gated to alien mode like the game itself.
-    const { stageCanvas } = useThreeStage(mode.isAlienMode, { enemies, projectiles, ally, powerUps, getShipRenderState, enemyHealthRatio, healthColor })
+    const { stageCanvas } = useThreeStage(mode.isAlienMode, { enemies, projectiles, consumeProjectile, ally, powerUps, getShipRenderState, enemyHealthRatio, healthColor })
 
     // Bound on window (rather than just the small game overlay) so a Space press still
     // reaches the game - and gets its default page-scroll prevented - no matter what

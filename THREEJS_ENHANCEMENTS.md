@@ -77,8 +77,9 @@ Shipped:
   is unchanged by distance, so flat sprites are unaffected).
 
 - [x] **Shatter on bolts**: player projectiles overlapping a rock burst rocky debris (via
-  the particle pool) + a small shake and recycle it. The bolt is deliberately not consumed
-  (asteroids are background decor), so shots aimed at UFOs still pass through.
+  the particle pool) + a small shake and recycle it. The shot is consumed on impact (the
+  rock blocks it) via a `consumeProjectile(id)` API on the game hook. Enemy fire ignores
+  the rocks.
 
 Still open:
 - [ ] Instanced version if we ever want dozens.
