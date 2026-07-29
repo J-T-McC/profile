@@ -102,11 +102,11 @@ const DESTROY_DURATION = 1.2 // s
 // ~98% in 1s, matching that transition feel.
 const UFO_DEPTH_RATE = 4
 
-// 3D saucer presentation: a fixed lean so it reads as 3D under the top-down camera, plus a
-// slow spin (with the tilt, the rotation of the rim + lights becomes visible).
-const UFO_TILT = 0.5 // rad
-const UFO_SPIN = 0.8 // rad/s
-const UFO_HULL_COLOR = 0x8f9bb0
+// 3D Borg-style cube: a dark greebled metal cube that tumbles on all three axes, with a
+// handful of glowing green lights.
+const UFO_SPIN = 0.7 // rad/s base tumble rate
+const UFO_HULL_COLOR = 0x3b424b
+const ENEMY_Z = -30 // just behind the gameplay plane so the player ship stays on top
 
 const lerp = (a, b, t) => a + (b - a) * t
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1)
@@ -195,6 +195,7 @@ export default function useThreeStage (active, game) {
   let asteroidAmbient = null
   let asteroidLight = null
   let noise = null
+  let mergeGeometries = null
 
   // World (container px, +y down) -> scene (same units, +y up).
   const toScene = (x, y) => [x, viewHeight - y]
@@ -652,19 +653,15 @@ export default function useThreeStage (active, game) {
   }
 
   // A UFO plus its health bar (dark track + coloured fill quads).
-  // A procedural flying saucer (radius 0.5 in local space, vertical axis = local +z toward
-  // the camera): a flattened lens hull, a glassy dome, and a glowing under-ring. A tilt +
-  // spin group makes it read as a hovering, rotating 3D saucer. Lit like the ship/asteroids;
-  // materials are per-enemy so each can be tinted/dimmed independently.
+  // A procedural Borg-style cube (~0.58 across in local space): a dark greebled metal cube
+  // with a scatter of small boxes on its faces, plus a few glowing green light blocks. The
+  // cube + hull greebles merge into one geometry and the lights into another (2 draw calls),
+  // wrapped in a spin group so it tumbles in 3D. Materials are per-enemy for tint/dim.
   const makeEnemyBody = () => {
     const body = new THREE.Group()
-    const tilt = new THREE.Group()
-    tilt.rotation.x = UFO_TILT
     const spin = new THREE.Group()
-    tilt.add(spin)
-    body.add(tilt)
+    body.add(spin)
 
-    const geos = []
     const mats = []
     const mkMat = (opts) => {
       const m = new THREE.MeshStandardMaterial({ transparent: true, ...opts })
@@ -672,31 +669,54 @@ export default function useThreeStage (active, game) {
       return m
     }
     const hullBase = new THREE.Color(UFO_HULL_COLOR)
-    const hull = mkMat({ metalness: 0.55, roughness: 0.5 })
+    const hull = mkMat({ metalness: 0.4, roughness: 0.6 })
     hull.color.copy(hullBase)
-    const domeMat = mkMat({ color: 0x0a1622, metalness: 0.2, roughness: 0.1, emissive: new THREE.Color(0x1e7fa0), emissiveIntensity: 0.6 })
-    const ringMat = mkMat({ color: 0x05100a, metalness: 0.3, roughness: 0.5, emissive: new THREE.Color(0x39ff14), emissiveIntensity: 1.0 })
+    const lightMat = mkMat({ color: 0x061006, metalness: 0.3, roughness: 0.5, emissive: new THREE.Color(0x39ff14), emissiveIntensity: 1.0 })
 
-    const add = (geo, mat, z, flatZ) => {
-      geos.push(geo)
-      const mesh = new THREE.Mesh(geo, mat)
-      if (flatZ != null) mesh.scale.set(1, 1, flatZ)
-      if (z) mesh.position.z = z
-      spin.add(mesh)
-      return mesh
+    const S = 0.58
+    const half = S / 2
+    const faces = [['x', 1], ['x', -1], ['y', 1], ['y', -1], ['z', 1], ['z', -1]]
+    const greebleBases = [
+      new THREE.BoxGeometry(0.12, 0.12, 0.08),
+      new THREE.BoxGeometry(0.2, 0.08, 0.06),
+      new THREE.BoxGeometry(0.07, 0.07, 0.14),
+      new THREE.BoxGeometry(0.16, 0.16, 0.05),
+    ]
+    const mtx = new THREE.Matrix4()
+    // A greeble box centred on a random face (half sunk into the cube, half proud).
+    const placeGreeble = () => {
+      const g = greebleBases[(Math.random() * greebleBases.length) | 0].clone()
+      const [axis, sign] = faces[(Math.random() * 6) | 0]
+      const u = (Math.random() * 2 - 1) * half * 0.85
+      const v = (Math.random() * 2 - 1) * half * 0.85
+      let x = 0; let y = 0; let z = 0
+      if (axis === 'x') { x = sign * half; y = u; z = v } else if (axis === 'y') { x = u; y = sign * half; z = v } else { x = u; y = v; z = sign * half }
+      g.applyMatrix4(mtx.makeTranslation(x, y, z))
+      return g
     }
-    const disc = add(new THREE.SphereGeometry(0.5, 20, 12), hull, 0, 0.26) // flattened lens hull
-    const dome = add(new THREE.SphereGeometry(0.24, 16, 10), domeMat, 0.1, 0.85)
-    const ring = add(new THREE.TorusGeometry(0.4, 0.03, 8, 28), ringMat, -0.02, null)
-    enableBloom(ring) // the running lights glow
 
-    body.userData.meshes = [disc, dome, ring]
+    const hullGeos = [new THREE.BoxGeometry(S, S, S)]
+    const lightGeos = []
+    for (let i = 0; i < 54; i++) hullGeos.push(placeGreeble())
+    for (let i = 0; i < 8; i++) lightGeos.push(placeGreeble())
+
+    const hullGeo = mergeGeometries(hullGeos)
+    const lightGeo = mergeGeometries(lightGeos)
+    hullGeos.forEach((g) => g.dispose())
+    lightGeos.forEach((g) => g.dispose())
+    greebleBases.forEach((g) => g.dispose())
+
+    const hullMesh = new THREE.Mesh(hullGeo, hull)
+    const lightMesh = new THREE.Mesh(lightGeo, lightMat)
+    enableBloom(lightMesh) // the green lights glow
+    spin.add(hullMesh, lightMesh)
+
+    body.userData.meshes = [hullMesh, lightMesh]
     body.userData.spin = spin
     body.userData.hull = hull
-    body.userData.domeMat = domeMat
-    body.userData.ringMat = ringMat
+    body.userData.lightMat = lightMat
     body.userData.hullBase = hullBase
-    body.userData.geos = geos
+    body.userData.geos = [hullGeo, lightGeo]
     body.userData.mats = mats
     return body
   }
@@ -1084,10 +1104,12 @@ export default function useThreeStage (active, game) {
       // Anchor the top-left (enemy.x/y) like the old element did, so the eased size grows
       // from the corner rather than shifting the centre.
       const ud = body.userData
-      body.position.set(...toScene(enemy.x + size / 2, enemy.y + size / 2), 0)
-      // renderOrder is per-mesh (a Group's doesn't propagate), and the saucer spins.
+      body.position.set(...toScene(enemy.x + size / 2, enemy.y + size / 2), ENEMY_Z)
+      // renderOrder is per-mesh (a Group's doesn't propagate); the cube tumbles on all axes.
       for (const m of ud.meshes) m.renderOrder = enemy.zIndex
-      ud.spin.rotation.z += UFO_SPIN * dt
+      ud.spin.rotation.x += UFO_SPIN * 0.55 * dt
+      ud.spin.rotation.y += UFO_SPIN * dt
+      ud.spin.rotation.z += UFO_SPIN * 0.3 * dt
 
       if (enemy.destroyed) {
         if (ud.destroyStart === undefined) ud.destroyStart = t
@@ -1100,9 +1122,8 @@ export default function useThreeStage (active, game) {
         if (enemy.hit) ud.hull.color.set(UFO_HIT_COLOR)
         else ud.hull.color.copy(ud.hullBase).multiplyScalar(dim)
       }
-      // Fade the emissive accents with depth too.
-      ud.domeMat.emissiveIntensity = 0.6 * dim
-      ud.ringMat.emissiveIntensity = 1.0 * dim
+      // Fade the emissive lights with depth too.
+      ud.lightMat.emissiveIntensity = dim
 
       // Health bar just above the UFO (the old CSS anchored it at the enemy's top-left,
       // translated (-2, -10), width = 0.8 * size). Fill is left-aligned; both dim with depth.
@@ -1346,10 +1367,14 @@ export default function useThreeStage (active, game) {
     // Bail if we were torn down - or another start already ran - while importing.
     if (renderer || !active.value || stageCanvas.value !== canvas) return
 
-    // Coherent noise for sculpting the asteroid surfaces (also lazy).
-    const { ImprovedNoise } = await import('three/examples/jsm/math/ImprovedNoise.js')
+    // Coherent noise (asteroids) + geometry merge util (Borg-cube UFOs) - also lazy.
+    const [{ ImprovedNoise }, bgu] = await Promise.all([
+      import('three/examples/jsm/math/ImprovedNoise.js'),
+      import('three/examples/jsm/utils/BufferGeometryUtils.js'),
+    ])
     if (renderer || !active.value || stageCanvas.value !== canvas) return
     noise = new ImprovedNoise()
+    mergeGeometries = bgu.mergeGeometries
 
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
     // Opaque black backdrop (deep space) for both the bg render target and the final canvas.
@@ -1451,6 +1476,7 @@ export default function useThreeStage (active, game) {
     asteroidLight?.dispose?.()
     asteroidAmbient = asteroidLight = null
     noise = null
+    mergeGeometries = null
 
     if (particleGeom) particleGeom.dispose()
     if (particleMat) particleMat.dispose()
