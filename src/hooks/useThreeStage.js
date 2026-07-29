@@ -22,12 +22,12 @@ const SHIP_TEXTURE_URL =
 // texture each frame and shown on the ortho background quad, so the stars get genuine depth
 // (near ones big, far ones tiny) and parallax as the camera drifts with the ship - while
 // the gameplay layer stays pixel-accurate orthographic.
-const BG_STAR_COUNT = 2200
-const BG_NEAR = 8 // nearest star depth (world units in front of the bg camera)
-const BG_FAR = 150 // farthest
-const BG_PARALLAX = 3.2 // how far the bg camera slides with the ship (world units)
+const BG_STAR_COUNT = 3600
+const BG_NEAR = 60 // nearest star depth (world units) - kept far so we're not "flying through"
+const BG_FAR = 320 // farthest
+const BG_PARALLAX = 1.2 // how far the bg camera slides with the ship (world units) - subtle
 const BG_PARALLAX_RATE = 2.5 // easing toward the parallax target (per second)
-const BG_DRIFT = 0.006 // slow galactic spin (rad/s)
+const BG_DRIFT = 0.005 // slow galactic spin (rad/s)
 
 const ALLY_SIZE = 64 // matches ALLY_SIZE in useSpaceGame
 const ALLY_HEIGHT = ALLY_SIZE * 1.2
@@ -148,6 +148,8 @@ export default function useThreeStage (active, game) {
   let bgCamera = null
   let bgRT = null
   let starField = null
+  let starMat = null
+  let starTexture = null
 
   // Entities / layers.
   let bgMesh = null
@@ -217,6 +219,25 @@ export default function useThreeStage (active, game) {
     const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
     g.addColorStop(0.0, 'rgba(255,255,255,0.9)')
     g.addColorStop(0.4, 'rgba(255,255,255,0.35)')
+    g.addColorStop(1.0, 'rgba(255,255,255,0)')
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, size, size)
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.colorSpace = THREE.SRGBColorSpace
+    return tex
+  }
+
+  // A crisp star point: bright tight core with a very quick falloff (unlike the soft glow
+  // sprite, which turned each star into a giant haze).
+  const makeStarTexture = () => {
+    const size = 32
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = size
+    const ctx = canvas.getContext('2d')
+    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+    g.addColorStop(0.0, 'rgba(255,255,255,1)')
+    g.addColorStop(0.3, 'rgba(255,255,255,0.85)')
+    g.addColorStop(0.55, 'rgba(255,255,255,0.15)')
     g.addColorStop(1.0, 'rgba(255,255,255,0)')
     ctx.fillStyle = g
     ctx.fillRect(0, 0, size, size)
@@ -328,8 +349,10 @@ export default function useThreeStage (active, game) {
 
     fitBackgroundQuad(bgMesh, null)
 
-    // Background layer: match its render target + camera aspect to the viewport.
-    if (bgRT) bgRT.setSize(Math.max(1, viewWidth), Math.max(1, viewHeight))
+    // Background layer: match its render target (device-res) + camera aspect to the viewport.
+    const bgPr = renderer.getPixelRatio()
+    if (bgRT) bgRT.setSize(Math.max(1, Math.round(viewWidth * bgPr)), Math.max(1, Math.round(viewHeight * bgPr)))
+    if (starMat) starMat.uniforms.uPixelRatio.value = bgPr
     if (bgCamera) {
       bgCamera.aspect = viewWidth / viewHeight
       bgCamera.updateProjectionMatrix()
@@ -365,6 +388,7 @@ export default function useThreeStage (active, game) {
 
     const positions = new Float32Array(BG_STAR_COUNT * 3)
     const colors = new Float32Array(BG_STAR_COUNT * 3)
+    const sizes = new Float32Array(BG_STAR_COUNT)
     const c = new THREE.Color()
     for (let i = 0; i < BG_STAR_COUNT; i++) {
       const z = -(BG_NEAR + Math.random() * (BG_FAR - BG_NEAR))
@@ -374,26 +398,51 @@ export default function useThreeStage (active, game) {
       positions[i * 3 + 2] = z
       // Cool-white to faint gold, with a wide brightness spread.
       c.setHSL(0.55 + (Math.random() - 0.5) * 0.25, Math.random() * 0.35, 0.65 + Math.random() * 0.35)
-      const b = 0.35 + Math.random() * 0.65
+      const b = 0.35 + Math.random() * 0.6
       colors[i * 3] = c.r * b; colors[i * 3 + 1] = c.g * b; colors[i * 3 + 2] = c.b * b
+      // Screen-space size (px): mostly tiny specks, a small minority a bit brighter/bigger.
+      // Decoupled from depth so far stars stay crisp points rather than vanishing.
+      sizes[i] = Math.random() < 0.9 ? 0.6 + Math.random() * 0.9 : 1.6 + Math.random() * 1.4
     }
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
-    starField = new THREE.Points(geo, new THREE.PointsMaterial({
-      size: 1.1,
-      map: glowTexture,
-      vertexColors: true,
+    geo.setAttribute('aColor', new THREE.BufferAttribute(colors, 3))
+    geo.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1))
+
+    starTexture = makeStarTexture()
+    starMat = new THREE.ShaderMaterial({
+      uniforms: {
+        map: { value: starTexture },
+        uPixelRatio: { value: renderer.getPixelRatio() },
+      },
+      vertexShader: `
+        attribute float aSize;
+        attribute vec3 aColor;
+        uniform float uPixelRatio;
+        varying vec3 vColor;
+        void main() {
+          vColor = aColor;
+          gl_PointSize = aSize * uPixelRatio;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D map;
+        varying vec3 vColor;
+        void main() { gl_FragColor = vec4(vColor, texture2D(map, gl_PointCoord).a); }
+      `,
       transparent: true,
       depthWrite: false,
-      sizeAttenuation: true, // near stars big, far ones sub-pixel - the depth cue
       blending: THREE.AdditiveBlending,
-    }))
+    })
+    starField = new THREE.Points(geo, starMat)
     starField.frustumCulled = false
     bgScene.add(starField)
 
-    // Render target the bg scene draws into, shown on the ortho background quad.
-    bgRT = new THREE.WebGLRenderTarget(Math.max(1, viewWidth), Math.max(1, viewHeight))
+    // Render target the bg scene draws into (device-res for crisp points), shown on the
+    // ortho background quad.
+    const pr = renderer.getPixelRatio()
+    bgRT = new THREE.WebGLRenderTarget(Math.max(1, Math.round(viewWidth * pr)), Math.max(1, Math.round(viewHeight * pr)))
 
     // Full-screen quad in the ortho scene that displays the bg render target. Opaque (it's
     // the backdrop) and never bloomed.
@@ -1253,8 +1302,9 @@ export default function useThreeStage (active, game) {
       starField.geometry.dispose()
       starField.material.dispose()
     }
+    starTexture?.dispose?.()
     bgRT?.dispose?.()
-    bgScene = bgCamera = bgRT = starField = null
+    bgScene = bgCamera = bgRT = starField = starMat = starTexture = null
 
     for (const a of asteroids) {
       scene?.remove(a.mesh)

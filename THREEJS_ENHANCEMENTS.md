@@ -96,9 +96,12 @@ quad shows that texture. So the composer/selective-bloom/gameplay path stays exa
 was, while the stars get genuine perspective + parallax.
 
 Shipped:
-- Perspective starfield with per-star colour/brightness spread, additive, slow galactic spin.
-- The bg camera eases toward a parallax offset driven by the ship position (near stars shift
-  more than far → real motion parallax), for the "3D pocket" feel.
+- Perspective starfield: ~3600 points with a crisp star sprite (tight core, no haze) and
+  per-star **screen-space pixel sizes** (mostly tiny specks, a few brighter) via a small
+  shader points material - sizes are decoupled from depth so far stars stay crisp.
+- Field kept far (near depth 60) with only subtle parallax - stars read as distant, not
+  something we fly between. The bg camera eases toward a small offset driven by the ship
+  position (near stars shift a touch more than far), plus a slow galactic spin.
 - Replaced the old flat scrolling `CanvasTexture` starfield (and its two Cloudinary images)
   entirely - the gameplay coordinate math stays untouched (still ortho).
 
