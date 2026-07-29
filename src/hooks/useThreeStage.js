@@ -15,8 +15,11 @@ import enterpriseUrl from '@/assets/enterprise.svg'
 // renderOrder (depth test off), mirroring the old CSS z-index stack.
 
 const SHIP_SIZE = 40 // matches SHIP_SIZE in useSpaceGame (Tailwind w-10 h-10)
-const SHIP_TEXTURE_URL =
-  'https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png'
+
+// The 3D ship banks (rolls) into turns: bank angle tracks the turn rate, clamped and eased.
+const SHIP_BANK_PER_DEGPS = 0.004 // rad of roll per deg/s of turn
+const SHIP_MAX_BANK = 0.6 // rad (~34 deg)
+const SHIP_BANK_RATE = 8 // easing toward the target roll (per second)
 
 // Perspective background starfield. Its own scene + PerspectiveCamera are rendered to a
 // texture each frame and shown on the ortho background quad, so the stars get genuine depth
@@ -134,7 +137,6 @@ export default function useThreeStage (active, game) {
   let viewHeight = 1
 
   // Shared textures.
-  let shipTexture = null
   let ufoTexture = null
   let enterpriseTexture = null
   let beamTexture = null
@@ -153,8 +155,10 @@ export default function useThreeStage (active, game) {
 
   // Entities / layers.
   let bgMesh = null
-  let shipGroup = null
-  let shipBody = null
+  let shipGroup = null // owns position, heading, warp scale
+  let shipModel = null // low-poly 3D ship; owns the bank (roll) into turns
+  let lastShipAngle = null
+  let shipBank = 0
   let shipHitGlow = null
   let shipShieldGlow = null
   let allyGroup = null
@@ -462,6 +466,50 @@ export default function useThreeStage (active, game) {
     return mesh
   }
 
+  // A procedural low-poly fighter, built in ~unit local space with its nose toward +Y and
+  // "up" toward +Z (the camera). Lit by the asteroid lights already in the scene. Materials
+  // are transparent:true so they sort into the same queue as the sprites (by renderOrder),
+  // but keep depthTest/Write so the ship self-occludes correctly as it banks.
+  const buildShipModel = () => {
+    const group = new THREE.Group()
+    const geos = []
+    const mats = []
+    const shipMat = (opts) => {
+      const m = new THREE.MeshStandardMaterial({ transparent: true, ...opts })
+      mats.push(m)
+      return m
+    }
+    const hull = shipMat({ color: 0x9aa6bf, metalness: 0.5, roughness: 0.45 })
+    const accent = shipMat({ color: 0x35507f, metalness: 0.5, roughness: 0.4 })
+    const glass = shipMat({ color: 0x081019, metalness: 0.2, roughness: 0.1, emissive: 0x1e7fa0, emissiveIntensity: 0.7 })
+    const engineMat = shipMat({ color: 0x1c2230, metalness: 0.3, roughness: 0.6, emissive: 0x37ccff, emissiveIntensity: 0.9 })
+
+    const add = (geo, mat, pos, rot, scale) => {
+      geos.push(geo)
+      const mesh = new THREE.Mesh(geo, mat)
+      if (pos) mesh.position.set(...pos)
+      if (rot) mesh.rotation.set(...rot)
+      if (scale) mesh.scale.set(...scale)
+      mesh.renderOrder = RENDER_ORDER.ship
+      group.add(mesh)
+    }
+
+    // Fuselage: a 6-sided tapered body (cone points +Y by default).
+    add(new THREE.ConeGeometry(0.16, 0.95, 6), hull, [0, 0, 0.02])
+    // Swept delta wings (thin boxes rolled up into a dihedral and angled back).
+    add(new THREE.BoxGeometry(0.5, 0.34, 0.045), accent, [-0.26, -0.08, 0], [0, 0.35, 0.5])
+    add(new THREE.BoxGeometry(0.5, 0.34, 0.045), accent, [0.26, -0.08, 0], [0, -0.35, -0.5])
+    // Cockpit dome, forward and on top.
+    add(new THREE.SphereGeometry(0.1, 12, 8), glass, [0, 0.12, 0.11], null, [1, 1.3, 0.7])
+    // Twin engine nozzles at the tail.
+    add(new THREE.CylinderGeometry(0.055, 0.075, 0.22, 8), engineMat, [-0.12, -0.44, 0.02])
+    add(new THREE.CylinderGeometry(0.055, 0.075, 0.22, 8), engineMat, [0.12, -0.44, 0.02])
+
+    group.userData.geos = geos
+    group.userData.mats = mats
+    return group
+  }
+
   const buildShip = () => {
     shipHitGlow = makeGlowMesh(SHIP_HIT_COLOR, RENDER_ORDER.shipGlow)
     // The shield aura is a big, persistent disc - keep it off the bloom layer so it reads as
@@ -469,9 +517,8 @@ export default function useThreeStage (active, game) {
     shipShieldGlow = makeGlowMesh(SHIP_SHIELD_COLOR, RENDER_ORDER.shipGlow, false)
 
     shipGroup = new THREE.Group()
-    shipBody = new THREE.Mesh(unitGeometry, basicMat({ map: shipTexture }))
-    shipBody.renderOrder = RENDER_ORDER.ship
-    shipGroup.add(shipBody)
+    shipModel = buildShipModel()
+    shipGroup.add(shipModel)
     shipGroup.visible = false
     scene.add(shipGroup)
   }
@@ -797,7 +844,7 @@ export default function useThreeStage (active, game) {
     }
   }
 
-  const updateShip = (t) => {
+  const updateShip = (t, dt) => {
     const s = game.getShipRenderState()
     shipGroup.visible = s.visible
     shipHitGlow.visible = s.visible && s.hit
@@ -809,6 +856,7 @@ export default function useThreeStage (active, game) {
 
     if (!s.visible) {
       lastShipX = lastShipY = null
+      lastShipAngle = null
       return
     }
 
@@ -840,8 +888,22 @@ export default function useThreeStage (active, game) {
     shipGroup.position.set(cx, cy, 0)
     // CSS rotate() is clockwise in screen space; scene +y is up, so negate.
     shipGroup.rotation.z = -THREE.MathUtils.degToRad(s.angle)
-    // CSS scale(1/stretch, stretch) - warp squash-and-stretch.
-    shipGroup.scale.set(SHIP_SIZE / s.stretch, SHIP_SIZE * s.stretch, 1)
+    // CSS scale(1/stretch, stretch) - warp squash-and-stretch. z scales too so the model
+    // keeps its proportions (the warp only squashes in the screen plane).
+    shipGroup.scale.set(SHIP_SIZE / s.stretch, SHIP_SIZE * s.stretch, SHIP_SIZE)
+
+    // Bank into turns: roll the model around its forward axis, scaled by turn rate.
+    let bankTarget = 0
+    if (lastShipAngle != null && dt > 0) {
+      let d = s.angle - lastShipAngle
+      while (d > 180) d -= 360
+      while (d < -180) d += 360
+      const angVel = d / dt // deg/s
+      bankTarget = Math.max(-SHIP_MAX_BANK, Math.min(SHIP_MAX_BANK, -angVel * SHIP_BANK_PER_DEGPS))
+    }
+    lastShipAngle = s.angle
+    shipBank += (bankTarget - shipBank) * (1 - Math.exp(-SHIP_BANK_RATE * dt))
+    shipModel.rotation.y = shipBank
 
     // Glows follow the ship centre but ignore the warp stretch.
     if (shipHitGlow.visible) {
@@ -1110,7 +1172,7 @@ export default function useThreeStage (active, game) {
     prevTime = time
     if (game) {
       updateAsteroids(dt)
-      updateShip(t)
+      updateShip(t, dt)
       updateAlly(t)
       reconcileEnemies(t, dt)
       reconcileBolts()
@@ -1241,7 +1303,6 @@ export default function useThreeStage (active, game) {
       return tex
     }
 
-    shipTexture = load(SHIP_TEXTURE_URL)
     ufoTexture = load(ufoUrl)
     enterpriseTexture = load(enterpriseUrl)
     beamTexture = makeBeamTexture()
@@ -1293,8 +1354,13 @@ export default function useThreeStage (active, game) {
     for (const mesh of [bgMesh, shipHitGlow, shipShieldGlow, allyBody, beamMesh]) {
       if (mesh) mesh.material.dispose()
     }
-    if (shipGroup) shipGroup.children.forEach((c) => c.material.dispose())
-    bgMesh = shipGroup = shipBody = null
+    if (shipModel) {
+      shipModel.userData.geos?.forEach((g) => g.dispose())
+      shipModel.userData.mats?.forEach((m) => m.dispose())
+    }
+    bgMesh = shipGroup = shipModel = null
+    lastShipAngle = null
+    shipBank = 0
     shipHitGlow = shipShieldGlow = allyGroup = allyBody = beamMesh = null
 
     // Perspective background layer.
@@ -1328,7 +1394,7 @@ export default function useThreeStage (active, game) {
     lastShipHit = false
 
     if (unitGeometry) unitGeometry.dispose()
-    for (const tex of [shipTexture, ufoTexture, enterpriseTexture, beamTexture, glowTexture]) {
+    for (const tex of [ufoTexture, enterpriseTexture, beamTexture, glowTexture]) {
       if (tex) tex.dispose()
     }
     Object.values(boltTextures).forEach((t) => t.dispose())
@@ -1346,7 +1412,7 @@ export default function useThreeStage (active, game) {
       renderer.forceContextLoss?.()
     }
     renderer = scene = camera = unitGeometry = null
-    shipTexture = ufoTexture = enterpriseTexture = beamTexture = glowTexture = null
+    ufoTexture = enterpriseTexture = beamTexture = glowTexture = null
   }
 
   // The canvas is behind a v-if (alien mode, desktop only), so it only exists in
