@@ -66,6 +66,13 @@ const HEALTH_BAR_HEIGHT = 5 // px, matches the old .ufo-health-track
 // burst/trail effect; PARTICLE_MAX caps the live count.
 const PARTICLE_MAX = 700
 
+// Bloom (UnrealBloomPass). Threshold is high so only the bright, additive pieces (bolts,
+// glows, beam, particles, the white star field) blow out into neon - the mid-tone ship
+// and UFO sprites barely bloom.
+const BLOOM_STRENGTH = 0.7
+const BLOOM_RADIUS = 0.4
+const BLOOM_THRESHOLD = 0.55
+
 // Twinkling drift, matching @keyframes move-twink-back (-10000px, 5000px over 300s).
 const TWINKLE_VX = -10000 / 300 // px/s
 const TWINKLE_VY = 5000 / 300 // px/s
@@ -100,6 +107,8 @@ export default function useThreeStage (active, game) {
   // alien mode is actually entered.
   let THREE = null
   let renderer = null
+  let composer = null
+  let bloomPass = null
   let scene = null
   let camera = null
   let unitGeometry = null
@@ -289,6 +298,11 @@ export default function useThreeStage (active, game) {
 
     // gl_PointSize is in framebuffer px, so it must track the renderer pixel ratio.
     if (particleMat) particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio()
+
+    if (composer) {
+      composer.setPixelRatio(renderer.getPixelRatio())
+      composer.setSize(viewWidth, viewHeight)
+    }
   }
 
   // --- Builders --------------------------------------------------------------
@@ -787,8 +801,38 @@ export default function useThreeStage (active, game) {
       reconcilePowerUps(t)
       updateParticles(dt)
     }
-    renderer.render(scene, camera)
+    if (composer) composer.render()
+    else renderer.render(scene, camera)
     rafId = requestAnimationFrame(tick)
+  }
+
+  // Bloom via an EffectComposer. The postprocessing passes are dynamically imported so
+  // they stay out of the default bundle (like three itself). On any failure we simply
+  // leave composer null and fall back to renderer.render - the scene still draws, just
+  // without the glow.
+  const buildComposer = async (canvas) => {
+    try {
+      const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }] = await Promise.all([
+        import('three/examples/jsm/postprocessing/EffectComposer.js'),
+        import('three/examples/jsm/postprocessing/RenderPass.js'),
+        import('three/examples/jsm/postprocessing/UnrealBloomPass.js'),
+        import('three/examples/jsm/postprocessing/OutputPass.js'),
+      ])
+      // Torn down (or the canvas swapped) while importing.
+      if (!renderer || stageCanvas.value !== canvas) return
+
+      composer = new EffectComposer(renderer)
+      composer.setPixelRatio(renderer.getPixelRatio())
+      composer.addPass(new RenderPass(scene, camera))
+      bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(viewWidth, viewHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD
+      )
+      composer.addPass(bloomPass)
+      composer.addPass(new OutputPass())
+    } catch (err) {
+      composer = bloomPass = null
+      console.warn('[useThreeStage] bloom unavailable, rendering without it', err)
+    }
   }
 
   // --- Lifecycle -------------------------------------------------------------
@@ -839,6 +883,9 @@ export default function useThreeStage (active, game) {
     buildAlly()
     buildParticles()
 
+    await buildComposer(canvas)
+    if (!renderer || stageCanvas.value !== canvas) return
+
     sizeToContainer()
     resizeObserver = new ResizeObserver(sizeToContainer)
     if (canvas.parentElement) resizeObserver.observe(canvas.parentElement)
@@ -888,6 +935,10 @@ export default function useThreeStage (active, game) {
     for (const k of Object.keys(boltTextures)) delete boltTextures[k]
     for (const { tex } of powerUpTextures.values()) tex.dispose()
     powerUpTextures.clear()
+
+    composer?.dispose?.()
+    bloomPass?.dispose?.()
+    composer = bloomPass = null
 
     if (renderer) {
       renderer.dispose()

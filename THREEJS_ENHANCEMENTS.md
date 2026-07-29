@@ -44,14 +44,17 @@ aware) now lives in `useThreeStage.js`.
 
 _Effort: M. Impact: high. Pure add-on, no coordinate changes._
 
-## 2. Post-processing / bloom
+## 2. Post-processing / bloom  ← DONE
 
-Swap the direct `renderer.render` for an `EffectComposer` with `UnrealBloomPass`. Instantly
-makes every additive element (bolts, glow, beam, health bars) read as real neon. Optionally
-add a subtle `FilmPass`/scanline or chromatic-aberration pass for the arcade-CRT vibe.
+An `EffectComposer` (RenderPass → UnrealBloomPass → OutputPass) now replaces the direct
+`renderer.render` when available. The passes are dynamically imported so they stay out of
+the default bundle, and it falls back to plain `renderer.render` if the import fails. A high
+threshold means only the bright additive pieces (bolts, glows, beam, particles, stars) blow
+out into neon.
 
-- Gate bloom strength by a quality check (skip on low-DPR / reduced-motion).
-- Watch cost on high-res displays; render the composer at a capped resolution.
+Still open:
+- [ ] Optional `FilmPass`/scanline or chromatic-aberration pass for the arcade-CRT vibe.
+- [ ] Consider skipping/softening bloom on low-DPR / low-power devices.
 
 _Effort: S–M. Impact: high. Cohesive glow across the whole scene._
 
@@ -138,10 +141,10 @@ _Effort: M. Impact: medium, high on "moments"._
 
 If we want one high-impact, low-risk PR to prove the direction:
 
-1. **Bloom pass** (§2) — instant cohesion, ~an afternoon.
+1. ~~**Bloom pass** (§2)~~ — DONE: EffectComposer + UnrealBloomPass, lazy-imported.
 2. ~~**Reusable particle pool** (§1)~~ — DONE: pool built, with thruster trail, UFO debris
    and collect sparkle wired in. Muzzle flash / impact sparks still to add.
-3. **Screen shake** (§7) on hits/kills.
+3. **Screen shake** (§7) on hits/kills.  ← next
 
 That trio is all additive, stays orthographic, needs no coordinate-bridge work, and
 transforms the feel. Asteroids (§3) and the perspective layer (§4) make a natural second PR
