@@ -106,6 +106,7 @@ const UFO_DEPTH_RATE = 4
 // handful of glowing green lights.
 const UFO_SPIN = 0.7 // rad/s base tumble rate
 const UFO_HULL_COLOR = 0x3b424b
+const UFO_LIGHT_EMISSIVE = 0.45 // keep the green lights lit but with only a gentle bloom
 const ENEMY_Z = -30 // just behind the gameplay plane so the player ship stays on top
 
 const lerp = (a, b, t) => a + (b - a) * t
@@ -1122,8 +1123,8 @@ export default function useThreeStage (active, game) {
         if (enemy.hit) ud.hull.color.set(UFO_HIT_COLOR)
         else ud.hull.color.copy(ud.hullBase).multiplyScalar(dim)
       }
-      // Fade the emissive lights with depth too.
-      ud.lightMat.emissiveIntensity = dim
+      // Fade the emissive lights with depth too (scaled down so they bloom only gently).
+      ud.lightMat.emissiveIntensity = dim * UFO_LIGHT_EMISSIVE
 
       // Health bar just above the UFO (the old CSS anchored it at the enemy's top-left,
       // translated (-2, -10), width = 0.8 * size). Fill is left-aligned; both dim with depth.
