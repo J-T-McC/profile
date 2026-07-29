@@ -44,13 +44,14 @@ aware) now lives in `useThreeStage.js`.
 
 _Effort: M. Impact: high. Pure add-on, no coordinate changes._
 
-## 2. Post-processing / bloom  ← DONE
+## 2. Post-processing / bloom  ← DONE (selective)
 
-An `EffectComposer` (RenderPass → UnrealBloomPass → OutputPass) now replaces the direct
-`renderer.render` when available. The passes are dynamically imported so they stay out of
-the default bundle, and it falls back to plain `renderer.render` if the import fails. A high
-threshold means only the bright additive pieces (bolts, glows, beam, particles, stars) blow
-out into neon.
+**Selective** bloom via the two-composer layer technique: a bloom composer renders only the
+`BLOOM_LAYER` objects (bolts, phaser beam, ship glows, particles) offscreen and blurs them;
+a final composer draws the full scene and additively composites the bloom texture on top.
+So the energy effects glow while the ship/UFO/ally sprites and the star field render clean
+(a global bloom washed those bright textures out). Passes are dynamically imported (out of
+the default bundle) with a plain `renderer.render` fallback.
 
 Still open:
 - [ ] Optional `FilmPass`/scanline or chromatic-aberration pass for the arcade-CRT vibe.

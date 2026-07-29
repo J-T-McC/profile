@@ -69,12 +69,14 @@ const PARTICLE_MAX = 700
 // Screen-shake decay (per second) - how fast the camera offset settles back to centre.
 const SHAKE_DECAY = 9
 
-// Bloom (UnrealBloomPass). Threshold is high so only the bright, additive pieces (bolts,
-// glows, beam, particles, the white star field) blow out into neon - the mid-tone ship
-// and UFO sprites barely bloom.
-const BLOOM_STRENGTH = 0.7
-const BLOOM_RADIUS = 0.4
-const BLOOM_THRESHOLD = 0.55
+// Selective bloom: only objects put on BLOOM_LAYER (the additive energy effects - bolts,
+// beam, ship glows, particles) glow. Everything else (ship/UFO/ally sprites, the star
+// field, health bars) renders normally, so bright white textures don't wash out. Because
+// only bloom objects are drawn in the bloom pass, the threshold can be 0.
+const BLOOM_LAYER = 1
+const BLOOM_STRENGTH = 0.9
+const BLOOM_RADIUS = 0.5
+const BLOOM_THRESHOLD = 0
 
 // Twinkling drift, matching @keyframes move-twink-back (-10000px, 5000px over 300s).
 const TWINKLE_VX = -10000 / 300 // px/s
@@ -110,7 +112,8 @@ export default function useThreeStage (active, game) {
   // alien mode is actually entered.
   let THREE = null
   let renderer = null
-  let composer = null
+  let bloomComposer = null // renders only the BLOOM_LAYER objects, offscreen
+  let finalComposer = null // renders the full scene, then adds the bloom texture
   let bloomPass = null
   let scene = null
   let camera = null
@@ -312,9 +315,11 @@ export default function useThreeStage (active, game) {
     // gl_PointSize is in framebuffer px, so it must track the renderer pixel ratio.
     if (particleMat) particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio()
 
-    if (composer) {
-      composer.setPixelRatio(renderer.getPixelRatio())
-      composer.setSize(viewWidth, viewHeight)
+    for (const c of [bloomComposer, finalComposer]) {
+      if (c) {
+        c.setPixelRatio(renderer.getPixelRatio())
+        c.setSize(viewWidth, viewHeight)
+      }
     }
   }
 
@@ -322,6 +327,10 @@ export default function useThreeStage (active, game) {
 
   const basicMat = (opts) =>
     new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, ...opts })
+
+  // Mark an object so it's picked up by the selective-bloom pass (keeps its base layer 0
+  // too, so it still renders in the normal pass).
+  const enableBloom = (obj) => obj.layers.enable(BLOOM_LAYER)
 
   const buildStarfield = () => {
     bgMesh = new THREE.Mesh(unitGeometry, basicMat({ color: 0x000000 }))
@@ -341,6 +350,7 @@ export default function useThreeStage (active, game) {
     const mesh = new THREE.Mesh(unitGeometry, basicMat({ map: glowTexture, color, blending: THREE.AdditiveBlending }))
     mesh.renderOrder = order
     mesh.visible = false
+    enableBloom(mesh)
     scene.add(mesh)
     return mesh
   }
@@ -370,6 +380,7 @@ export default function useThreeStage (active, game) {
     beamMesh = new THREE.Mesh(unitGeometry, basicMat({ map: beamTexture, color: BEAM_COLOR, blending: THREE.AdditiveBlending }))
     beamMesh.renderOrder = RENDER_ORDER.beam
     beamMesh.visible = false
+    enableBloom(beamMesh)
     scene.add(beamMesh)
   }
 
@@ -388,6 +399,7 @@ export default function useThreeStage (active, game) {
     const mesh = new THREE.Mesh(unitGeometry, basicMat({ map: boltTextures[kind], blending: THREE.AdditiveBlending }))
     mesh.renderOrder = RENDER_ORDER.bolt
     mesh.userData.kind = kind
+    enableBloom(mesh)
     scene.add(mesh)
     return mesh
   }
@@ -461,6 +473,7 @@ export default function useThreeStage (active, game) {
     particlePoints = new THREE.Points(particleGeom, particleMat)
     particlePoints.renderOrder = RENDER_ORDER.particles
     particlePoints.frustumCulled = false // positions roam; skip the stale-bounds cull
+    enableBloom(particlePoints)
     scene.add(particlePoints)
   }
 
@@ -837,36 +850,75 @@ export default function useThreeStage (active, game) {
       camera.position.x = camera.position.y = 0
     }
 
-    if (composer) composer.render()
-    else renderer.render(scene, camera)
+    if (bloomComposer && finalComposer) {
+      camera.layers.set(BLOOM_LAYER) // bloom pass: only the energy objects
+      bloomComposer.render()
+      camera.layers.set(0) // final pass: the whole scene (everything is on layer 0)
+      finalComposer.render()
+    } else {
+      renderer.render(scene, camera)
+    }
     rafId = requestAnimationFrame(tick)
   }
 
-  // Bloom via an EffectComposer. The postprocessing passes are dynamically imported so
-  // they stay out of the default bundle (like three itself). On any failure we simply
-  // leave composer null and fall back to renderer.render - the scene still draws, just
-  // without the glow.
+  // Selective bloom via two composers (the standard three.js technique). The postprocessing
+  // passes are dynamically imported so they stay out of the default bundle (like three
+  // itself). On any failure we leave the composers null and fall back to renderer.render -
+  // the scene still draws, just without the glow.
   const buildComposer = async (canvas) => {
     try {
-      const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { OutputPass }] = await Promise.all([
+      const [{ EffectComposer }, { RenderPass }, { UnrealBloomPass }, { ShaderPass }, { OutputPass }] = await Promise.all([
         import('three/examples/jsm/postprocessing/EffectComposer.js'),
         import('three/examples/jsm/postprocessing/RenderPass.js'),
         import('three/examples/jsm/postprocessing/UnrealBloomPass.js'),
+        import('three/examples/jsm/postprocessing/ShaderPass.js'),
         import('three/examples/jsm/postprocessing/OutputPass.js'),
       ])
       // Torn down (or the canvas swapped) while importing.
       if (!renderer || stageCanvas.value !== canvas) return
 
-      composer = new EffectComposer(renderer)
-      composer.setPixelRatio(renderer.getPixelRatio())
-      composer.addPass(new RenderPass(scene, camera))
+      const renderScene = new RenderPass(scene, camera)
+
+      // Pass 1: draw only the BLOOM_LAYER objects (camera layer is set at render time),
+      // blur them, and keep the result offscreen.
+      bloomComposer = new EffectComposer(renderer)
+      bloomComposer.renderToScreen = false
+      bloomComposer.setPixelRatio(renderer.getPixelRatio())
+      bloomComposer.addPass(renderScene)
       bloomPass = new UnrealBloomPass(
         new THREE.Vector2(viewWidth, viewHeight), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD
       )
-      composer.addPass(bloomPass)
-      composer.addPass(new OutputPass())
+      bloomComposer.addPass(bloomPass)
+
+      // Pass 2: draw the full scene, then additively composite the bloom texture over it.
+      const mixPass = new ShaderPass(
+        new THREE.ShaderMaterial({
+          uniforms: {
+            baseTexture: { value: null },
+            bloomTexture: { value: bloomComposer.renderTarget2.texture },
+          },
+          vertexShader: `
+            varying vec2 vUv;
+            void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+          `,
+          fragmentShader: `
+            uniform sampler2D baseTexture;
+            uniform sampler2D bloomTexture;
+            varying vec2 vUv;
+            void main() { gl_FragColor = texture2D(baseTexture, vUv) + texture2D(bloomTexture, vUv); }
+          `,
+        }),
+        'baseTexture'
+      )
+      mixPass.needsSwap = true
+
+      finalComposer = new EffectComposer(renderer)
+      finalComposer.setPixelRatio(renderer.getPixelRatio())
+      finalComposer.addPass(renderScene)
+      finalComposer.addPass(mixPass)
+      finalComposer.addPass(new OutputPass())
     } catch (err) {
-      composer = bloomPass = null
+      bloomComposer = finalComposer = bloomPass = null
       console.warn('[useThreeStage] bloom unavailable, rendering without it', err)
     }
   }
@@ -974,9 +1026,10 @@ export default function useThreeStage (active, game) {
     for (const { tex } of powerUpTextures.values()) tex.dispose()
     powerUpTextures.clear()
 
-    composer?.dispose?.()
+    bloomComposer?.dispose?.()
+    finalComposer?.dispose?.()
     bloomPass?.dispose?.()
-    composer = bloomPass = null
+    bloomComposer = finalComposer = bloomPass = null
 
     if (renderer) {
       renderer.dispose()
