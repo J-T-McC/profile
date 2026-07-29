@@ -87,14 +87,24 @@ Still open:
 
 _Effort: M (cosmetic) / L (collidable). Impact: high — first true 3D geometry._
 
-## 4. Real depth — perspective background layer
+## 4. Real depth — perspective background layer  ← DONE
 
-Add a **second scene + `PerspectiveCamera`** rendered underneath the ortho gameplay scene
-(clear depth between passes). Put starfield, nebula, asteroids, and distant traffic there so
-they get genuine perspective parallax while gameplay stays pixel-accurate ortho.
+A **second scene + `PerspectiveCamera`** holds a deep cloud of ~2200 star points
+(size-attenuated, so near stars are big and far ones sub-pixel — the depth cue). It's
+rendered into a `WebGLRenderTarget` each frame, and the ortho scene's full-screen background
+quad shows that texture. So the composer/selective-bloom/gameplay path stays exactly as it
+was, while the stars get genuine perspective + parallax.
 
-- Keeps the tricky gameplay coordinate math untouched (it stays ortho).
-- Camera can drift/parallax slightly with the ship's position for a 3D pocket feel.
+Shipped:
+- Perspective starfield with per-star colour/brightness spread, additive, slow galactic spin.
+- The bg camera eases toward a parallax offset driven by the ship position (near stars shift
+  more than far → real motion parallax), for the "3D pocket" feel.
+- Replaced the old flat scrolling `CanvasTexture` starfield (and its two Cloudinary images)
+  entirely - the gameplay coordinate math stays untouched (still ortho).
+
+Open follow-ups this unlocks:
+- [ ] Nebula (fbm shader) in the same bg scene (overlaps §6).
+- [ ] Distant traffic / a passing planet in the bg layer (§9).
 
 _Effort: M–L. Impact: high. Foundation for lots of background richness._
 

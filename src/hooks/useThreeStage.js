@@ -17,10 +17,17 @@ import enterpriseUrl from '@/assets/enterprise.svg'
 const SHIP_SIZE = 40 // matches SHIP_SIZE in useSpaceGame (Tailwind w-10 h-10)
 const SHIP_TEXTURE_URL =
   'https://res.cloudinary.com/ddaji66m6/image/upload/v1612058700/portfolio/spaceship_tlg2od.png'
-const STARS_URL =
-  'https://res.cloudinary.com/ddaji66m6/image/upload/v1611800904/portfolio/stars_vcimcd.png'
-const TWINKLING_URL =
-  'https://res.cloudinary.com/ddaji66m6/image/upload/v1611800910/portfolio/twinkling_qmxcrl.png'
+
+// Perspective background starfield. Its own scene + PerspectiveCamera are rendered to a
+// texture each frame and shown on the ortho background quad, so the stars get genuine depth
+// (near ones big, far ones tiny) and parallax as the camera drifts with the ship - while
+// the gameplay layer stays pixel-accurate orthographic.
+const BG_STAR_COUNT = 2200
+const BG_NEAR = 8 // nearest star depth (world units in front of the bg camera)
+const BG_FAR = 150 // farthest
+const BG_PARALLAX = 3.2 // how far the bg camera slides with the ship (world units)
+const BG_PARALLAX_RATE = 2.5 // easing toward the parallax target (per second)
+const BG_DRIFT = 0.006 // slow galactic spin (rad/s)
 
 const ALLY_SIZE = 64 // matches ALLY_SIZE in useSpaceGame
 const ALLY_HEIGHT = ALLY_SIZE * 1.2
@@ -46,9 +53,7 @@ const BOLT_STYLES = {
 
 // Mirrors the old CSS z-index stack.
 const RENDER_ORDER = {
-  bg: -11,
-  stars: -10,
-  twinkle: -9,
+  bg: -11, // full-screen quad showing the perspective starfield render target
   asteroid: -8, // drifting 3D rocks, in front of the starfield but behind all gameplay
   healthTrack: 15, // above every UFO (their zIndex is 1 or 12)
   healthFill: 16,
@@ -84,10 +89,6 @@ const BLOOM_LAYER = 1
 const BLOOM_STRENGTH = 0.9
 const BLOOM_RADIUS = 0.5
 const BLOOM_THRESHOLD = 0
-
-// Twinkling drift, matching @keyframes move-twink-back (-10000px, 5000px over 300s).
-const TWINKLE_VX = -10000 / 300 // px/s
-const TWINKLE_VY = 5000 / 300 // px/s
 
 // UFO kill pulse, from @keyframes ufo-destroyed-pulse (scale over 1.2s).
 const DESTROY_PULSE = [[0, 1], [0.15, 1.7], [0.35, 1.1], [0.55, 1.5], [1, 1]]
@@ -136,17 +137,20 @@ export default function useThreeStage (active, game) {
   let shipTexture = null
   let ufoTexture = null
   let enterpriseTexture = null
-  let starsTexture = null
-  let twinkleTexture = null
   let beamTexture = null
   let glowTexture = null
   const boltTextures = {} // player | alien | laser -> CanvasTexture
   const powerUpTextures = new Map() // `${label}|${color}` -> { tex, w, h }
 
+  // Perspective background layer: its own scene/camera rendered into bgRT each frame; bgMesh
+  // (a full-screen quad in the ortho scene) shows that texture.
+  let bgScene = null
+  let bgCamera = null
+  let bgRT = null
+  let starField = null
+
   // Entities / layers.
   let bgMesh = null
-  let starsMesh = null
-  let twinkleMesh = null
   let shipGroup = null
   let shipBody = null
   let shipHitGlow = null
@@ -323,8 +327,13 @@ export default function useThreeStage (active, game) {
     camera.updateProjectionMatrix()
 
     fitBackgroundQuad(bgMesh, null)
-    fitBackgroundQuad(starsMesh, starsTexture)
-    fitBackgroundQuad(twinkleMesh, twinkleTexture)
+
+    // Background layer: match its render target + camera aspect to the viewport.
+    if (bgRT) bgRT.setSize(Math.max(1, viewWidth), Math.max(1, viewHeight))
+    if (bgCamera) {
+      bgCamera.aspect = viewWidth / viewHeight
+      bgCamera.updateProjectionMatrix()
+    }
 
     // gl_PointSize is in framebuffer px, so it must track the renderer pixel ratio.
     if (particleMat) particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio()
@@ -346,18 +355,53 @@ export default function useThreeStage (active, game) {
   // too, so it still renders in the normal pass).
   const enableBloom = (obj) => obj.layers.enable(BLOOM_LAYER)
 
-  const buildStarfield = () => {
-    bgMesh = new THREE.Mesh(unitGeometry, basicMat({ color: 0x000000 }))
+  const buildBackground = () => {
+    // Off-screen perspective scene: a deep cloud of star points. Distributed in a wide cone
+    // (spread scales with depth) so the frustum stays filled at any aspect, with a colour +
+    // brightness spread for variety.
+    bgScene = new THREE.Scene()
+    bgCamera = new THREE.PerspectiveCamera(60, viewWidth / viewHeight, 0.1, BG_FAR + 40)
+    // Looks down -z by default; parallax slides it in x/y (see updateBackground).
+
+    const positions = new Float32Array(BG_STAR_COUNT * 3)
+    const colors = new Float32Array(BG_STAR_COUNT * 3)
+    const c = new THREE.Color()
+    for (let i = 0; i < BG_STAR_COUNT; i++) {
+      const z = -(BG_NEAR + Math.random() * (BG_FAR - BG_NEAR))
+      const spread = Math.abs(z) * 1.3
+      positions[i * 3] = (Math.random() * 2 - 1) * spread
+      positions[i * 3 + 1] = (Math.random() * 2 - 1) * spread
+      positions[i * 3 + 2] = z
+      // Cool-white to faint gold, with a wide brightness spread.
+      c.setHSL(0.55 + (Math.random() - 0.5) * 0.25, Math.random() * 0.35, 0.65 + Math.random() * 0.35)
+      const b = 0.35 + Math.random() * 0.65
+      colors[i * 3] = c.r * b; colors[i * 3 + 1] = c.g * b; colors[i * 3 + 2] = c.b * b
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    starField = new THREE.Points(geo, new THREE.PointsMaterial({
+      size: 1.1,
+      map: glowTexture,
+      vertexColors: true,
+      transparent: true,
+      depthWrite: false,
+      sizeAttenuation: true, // near stars big, far ones sub-pixel - the depth cue
+      blending: THREE.AdditiveBlending,
+    }))
+    starField.frustumCulled = false
+    bgScene.add(starField)
+
+    // Render target the bg scene draws into, shown on the ortho background quad.
+    bgRT = new THREE.WebGLRenderTarget(Math.max(1, viewWidth), Math.max(1, viewHeight))
+
+    // Full-screen quad in the ortho scene that displays the bg render target. Opaque (it's
+    // the backdrop) and never bloomed.
+    bgMesh = new THREE.Mesh(unitGeometry, new THREE.MeshBasicMaterial({
+      map: bgRT.texture, depthTest: false, depthWrite: false,
+    }))
     bgMesh.renderOrder = RENDER_ORDER.bg
     scene.add(bgMesh)
-
-    starsMesh = new THREE.Mesh(unitGeometry, basicMat({ map: starsTexture }))
-    starsMesh.renderOrder = RENDER_ORDER.stars
-    scene.add(starsMesh)
-
-    twinkleMesh = new THREE.Mesh(unitGeometry, basicMat({ map: twinkleTexture, opacity: 0.6 }))
-    twinkleMesh.renderOrder = RENDER_ORDER.twinkle
-    scene.add(twinkleMesh)
   }
 
   const makeGlowMesh = (color, order, bloom = true) => {
@@ -663,12 +707,27 @@ export default function useThreeStage (active, game) {
 
   // --- Per-frame updates -----------------------------------------------------
 
-  const updateStarfield = (t) => {
-    if (!twinkleTexture?.image?.width) return
-    twinkleTexture.offset.set(
-      (t * TWINKLE_VX) / twinkleTexture.image.width,
-      (t * TWINKLE_VY) / twinkleTexture.image.height
-    )
+  // Ease the bg camera toward a parallax offset driven by the ship, slowly spin the field,
+  // then render the perspective starfield into its target (shown on the ortho bg quad).
+  const renderBackground = (dt) => {
+    if (!bgScene || !bgCamera || !bgRT) return
+
+    starField.rotation.z += BG_DRIFT * dt
+
+    const s = game.getShipRenderState()
+    let tx = 0
+    let ty = 0
+    if (s.visible) {
+      tx = ((s.x / viewWidth) - 0.5) * 2 * BG_PARALLAX
+      ty = -((s.y / viewHeight) - 0.5) * 2 * BG_PARALLAX // world +y is down; bg +y is up
+    }
+    const k = 1 - Math.exp(-BG_PARALLAX_RATE * dt)
+    bgCamera.position.x += (tx - bgCamera.position.x) * k
+    bgCamera.position.y += (ty - bgCamera.position.y) * k
+
+    renderer.setRenderTarget(bgRT)
+    renderer.render(bgScene, bgCamera) // autoClear paints the opaque-black backdrop
+    renderer.setRenderTarget(null)
   }
 
   const updateAsteroids = (dt) => {
@@ -1001,7 +1060,6 @@ export default function useThreeStage (active, game) {
     const dt = Math.min((time - prevTime) / 1000, 0.05)
     prevTime = time
     if (game) {
-      updateStarfield(t)
       updateAsteroids(dt)
       updateShip(t)
       updateAlly(t)
@@ -1021,6 +1079,9 @@ export default function useThreeStage (active, game) {
       shakeMag = 0
       camera.position.x = camera.position.y = 0
     }
+
+    // Draw the perspective starfield into its target before the ortho scene samples it.
+    renderBackground(dt)
 
     if (bloomComposer && finalComposer) {
       camera.layers.set(BLOOM_LAYER) // bloom pass: only the energy objects
@@ -1112,6 +1173,8 @@ export default function useThreeStage (active, game) {
     noise = new ImprovedNoise()
 
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
+    // Opaque black backdrop (deep space) for both the bg render target and the final canvas.
+    renderer.setClearColor(0x000000, 1)
     scene = new THREE.Scene()
     // Deep clip range + far camera so the 3D asteroids' z-extent fits. Orthographic scale
     // is set by the frustum box (left/right/top/bottom), not camera distance, so pushing
@@ -1132,10 +1195,6 @@ export default function useThreeStage (active, game) {
     shipTexture = load(SHIP_TEXTURE_URL)
     ufoTexture = load(ufoUrl)
     enterpriseTexture = load(enterpriseUrl)
-    starsTexture = load(STARS_URL, () => fitBackgroundQuad(starsMesh, starsTexture))
-    starsTexture.wrapS = starsTexture.wrapT = THREE.RepeatWrapping
-    twinkleTexture = load(TWINKLING_URL, () => fitBackgroundQuad(twinkleMesh, twinkleTexture))
-    twinkleTexture.wrapS = twinkleTexture.wrapT = THREE.RepeatWrapping
     beamTexture = makeBeamTexture()
     glowTexture = makeGlowTexture()
 
@@ -1146,7 +1205,7 @@ export default function useThreeStage (active, game) {
     scratchColor = new THREE.Color()
     prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 
-    buildStarfield()
+    buildBackground()
     buildShip()
     buildAlly()
     buildParticles()
@@ -1182,12 +1241,20 @@ export default function useThreeStage (active, game) {
     boltMeshes.clear()
     powerUpMeshes.clear()
 
-    for (const mesh of [bgMesh, starsMesh, twinkleMesh, shipHitGlow, shipShieldGlow, allyBody, beamMesh]) {
+    for (const mesh of [bgMesh, shipHitGlow, shipShieldGlow, allyBody, beamMesh]) {
       if (mesh) mesh.material.dispose()
     }
     if (shipGroup) shipGroup.children.forEach((c) => c.material.dispose())
-    bgMesh = starsMesh = twinkleMesh = shipGroup = shipBody = null
+    bgMesh = shipGroup = shipBody = null
     shipHitGlow = shipShieldGlow = allyGroup = allyBody = beamMesh = null
+
+    // Perspective background layer.
+    if (starField) {
+      starField.geometry.dispose()
+      starField.material.dispose()
+    }
+    bgRT?.dispose?.()
+    bgScene = bgCamera = bgRT = starField = null
 
     for (const a of asteroids) {
       scene?.remove(a.mesh)
@@ -1211,7 +1278,7 @@ export default function useThreeStage (active, game) {
     lastShipHit = false
 
     if (unitGeometry) unitGeometry.dispose()
-    for (const tex of [shipTexture, ufoTexture, enterpriseTexture, starsTexture, twinkleTexture, beamTexture, glowTexture]) {
+    for (const tex of [shipTexture, ufoTexture, enterpriseTexture, beamTexture, glowTexture]) {
       if (tex) tex.dispose()
     }
     Object.values(boltTextures).forEach((t) => t.dispose())
@@ -1229,7 +1296,7 @@ export default function useThreeStage (active, game) {
       renderer.forceContextLoss?.()
     }
     renderer = scene = camera = unitGeometry = null
-    shipTexture = ufoTexture = enterpriseTexture = starsTexture = twinkleTexture = beamTexture = glowTexture = null
+    shipTexture = ufoTexture = enterpriseTexture = beamTexture = glowTexture = null
   }
 
   // The canvas is behind a v-if (alien mode, desktop only), so it only exists in
