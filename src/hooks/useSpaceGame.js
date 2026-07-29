@@ -1,5 +1,6 @@
 import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import useLocalStore from '@/hooks/useLocalStore'
+import shipPhaserUrl from '@/assets/sounds/shipphaser.wav'
 
 const UFO_MAX_SIZE = 75
 const UFO_MIN_SIZE = 38 // ~50% of max - floor so the depth illusion doesn't shrink it to a speck
@@ -119,6 +120,7 @@ const ALLY_STANDOFF = 150           // px - preferred distance it holds from the
 const ALLY_FIRE_COOLDOWN = 700      // ms between phaser beams
 const ALLY_BEAM_DURATION = 220      // ms a fired phaser beam stays drawn (must match the CSS fade)
 const ALLY_PHASER_DAMAGE = 2        // each phaser beam hits hard, like the laser buff
+const PHASER_VOLUME = 0.6           // playback gain for the ship-phaser sample
 
 // Power-up categories - weapon buffs are mutually exclusive with each other, but stack
 // alongside a shield, health pickups and an ally (you can hold a laser AND a shield AND
@@ -403,12 +405,28 @@ export default function useSpaceGame (isActive) {
 
   let audioCtx = null
 
+  // The ally phaser uses a real sample (the rest are synthesized). Decoded once into an
+  // AudioBuffer, lazily, the first time we have an audio context.
+  let phaserBuffer = null
+  let phaserBufferLoading = false
+  const loadPhaserBuffer = (ctx) => {
+    if (phaserBuffer || phaserBufferLoading) return
+    phaserBufferLoading = true
+    fetch(shipPhaserUrl)
+      .then((r) => r.arrayBuffer())
+      .then((data) => ctx.decodeAudioData(data))
+      .then((buf) => { phaserBuffer = buf })
+      .catch(() => {})
+      .finally(() => { phaserBufferLoading = false })
+  }
+
   const getAudioContext = () => {
     if (muted.value) return null
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
     if (!AudioContextClass) return null
     if (!audioCtx) audioCtx = new AudioContextClass()
     if (audioCtx.state === 'suspended') audioCtx.resume()
+    loadPhaserBuffer(audioCtx) // no-op once cached / in flight
     return audioCtx
   }
 
@@ -550,6 +568,18 @@ export default function useSpaceGame (isActive) {
   const playPhaserSound = () => {
     const ctx = getAudioContext()
     if (!ctx) return
+
+    // Play the ship-phaser sample once it's decoded; fall back to the synth zap meanwhile.
+    if (phaserBuffer) {
+      const src = ctx.createBufferSource()
+      src.buffer = phaserBuffer
+      const gain = ctx.createGain()
+      gain.gain.value = PHASER_VOLUME
+      src.connect(gain).connect(ctx.destination)
+      src.start()
+      return
+    }
+
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
     osc.type = 'sawtooth'
