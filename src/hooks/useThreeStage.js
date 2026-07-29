@@ -360,18 +360,20 @@ export default function useThreeStage (active, game) {
     scene.add(twinkleMesh)
   }
 
-  const makeGlowMesh = (color, order) => {
+  const makeGlowMesh = (color, order, bloom = true) => {
     const mesh = new THREE.Mesh(unitGeometry, basicMat({ map: glowTexture, color, blending: THREE.AdditiveBlending }))
     mesh.renderOrder = order
     mesh.visible = false
-    enableBloom(mesh)
+    if (bloom) enableBloom(mesh)
     scene.add(mesh)
     return mesh
   }
 
   const buildShip = () => {
     shipHitGlow = makeGlowMesh(SHIP_HIT_COLOR, RENDER_ORDER.shipGlow)
-    shipShieldGlow = makeGlowMesh(SHIP_SHIELD_COLOR, RENDER_ORDER.shipGlow)
+    // The shield aura is a big, persistent disc - keep it off the bloom layer so it reads as
+    // a soft additive glow rather than blowing out into a giant cyan halo.
+    shipShieldGlow = makeGlowMesh(SHIP_SHIELD_COLOR, RENDER_ORDER.shipGlow, false)
 
     shipGroup = new THREE.Group()
     shipBody = new THREE.Mesh(unitGeometry, basicMat({ map: shipTexture }))
