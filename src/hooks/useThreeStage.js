@@ -69,6 +69,12 @@ const TWINKLE_VY = 5000 / 300 // px/s
 const DESTROY_PULSE = [[0, 1], [0.15, 1.7], [0.35, 1.1], [0.55, 1.5], [1, 1]]
 const DESTROY_DURATION = 1.2 // s
 
+// Enemy size/brightness re-roll in discrete steps as they change "depth"; the old DOM
+// version smoothed those jumps with a ~1s CSS transition. Ease the rendered size and
+// depth-dim toward their targets each frame instead (framerate-independent). ~4 reaches
+// ~98% in 1s, matching that transition feel.
+const UFO_DEPTH_RATE = 4
+
 const lerp = (a, b, t) => a + (b - a) * t
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1)
 const sampleKeyframes = (frames, p) => {
@@ -95,6 +101,7 @@ export default function useThreeStage (active, game) {
   let resizeObserver = null
   let rafId = null
   let startTime = 0
+  let prevTime = 0
   let viewWidth = 1
   let viewHeight = 1
 
@@ -431,7 +438,9 @@ export default function useThreeStage (active, game) {
     }
   }
 
-  const reconcileEnemies = (t) => {
+  const reconcileEnemies = (t, dt) => {
+    // Ease factor toward this frame's targets (size/depth-dim), matching the old ~1s morph.
+    const k = 1 - Math.exp(-UFO_DEPTH_RATE * dt)
     const enemies = game.enemies
     for (const enemy of enemies) {
       let e = enemyMeshes.get(enemy.id)
@@ -443,28 +452,39 @@ export default function useThreeStage (active, game) {
       body.visible = track.visible = fill.visible = enemy.visible
       if (!enemy.visible) {
         body.userData.destroyStart = undefined
+        // Snap so a respawn (new profile) starts at its real size instead of gliding in.
+        body.userData.renderSize = enemy.size
+        body.userData.renderDim = Math.min(enemy.brightness / 100, 1)
         continue
       }
 
-      body.position.set(...toScene(enemy.x + enemy.size / 2, enemy.y + enemy.size / 2), 0)
+      const targetDim = Math.min(enemy.brightness / 100, 1) // depth dimming
+      // Lazily seed, then ease the rendered size/dim toward their targets each frame.
+      if (body.userData.renderSize === undefined) body.userData.renderSize = enemy.size
+      if (body.userData.renderDim === undefined) body.userData.renderDim = targetDim
+      const size = (body.userData.renderSize += (enemy.size - body.userData.renderSize) * k)
+      const dim = (body.userData.renderDim += (targetDim - body.userData.renderDim) * k)
+
+      // Anchor the top-left (enemy.x/y) like the old element did, so the eased size grows
+      // from the corner rather than shifting the centre.
+      body.position.set(...toScene(enemy.x + size / 2, enemy.y + size / 2), 0)
       body.renderOrder = enemy.zIndex
-      const dim = Math.min(enemy.brightness / 100, 1) // depth dimming
 
       if (enemy.destroyed) {
         if (body.userData.destroyStart === undefined) body.userData.destroyStart = t
         const p = clamp01((t - body.userData.destroyStart) / DESTROY_DURATION)
-        body.scale.setScalar(enemy.size * sampleKeyframes(DESTROY_PULSE, p))
+        body.scale.setScalar(size * sampleKeyframes(DESTROY_PULSE, p))
         body.material.color.set(UFO_DESTROYED_COLOR)
       } else {
         body.userData.destroyStart = undefined
-        body.scale.set(enemy.size, enemy.size, 1)
+        body.scale.set(size, size, 1)
         if (enemy.hit) body.material.color.set(UFO_HIT_COLOR)
         else body.material.color.setScalar(dim)
       }
 
       // Health bar just above the UFO (the old CSS anchored it at the enemy's top-left,
       // translated (-2, -10), width = 0.8 * size). Fill is left-aligned; both dim with depth.
-      const barW = enemy.size * 0.8
+      const barW = size * 0.8
       const barLeft = enemy.x - 2
       const barCy = enemy.y - 10 + HEALTH_BAR_HEIGHT / 2
       const ratio = clamp01(game.enemyHealthRatio(enemy))
@@ -551,13 +571,16 @@ export default function useThreeStage (active, game) {
 
   const tick = (time) => {
     if (!renderer) return
-    if (!startTime) startTime = time
+    if (!startTime) { startTime = time; prevTime = time }
     const t = (time - startTime) / 1000
+    // Clamped so a backgrounded tab (huge gap) doesn't make the eased values jump.
+    const dt = Math.min((time - prevTime) / 1000, 0.05)
+    prevTime = time
     if (game) {
       updateStarfield(t)
       updateShip(t)
       updateAlly(t)
-      reconcileEnemies(t)
+      reconcileEnemies(t, dt)
       reconcileBolts()
       reconcilePowerUps(t)
     }
