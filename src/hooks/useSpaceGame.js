@@ -1307,8 +1307,10 @@ export default function useSpaceGame (isActive) {
       ix /= il; iy /= il
       shipVX += ix * SHIP_ACCEL * dt
       shipVY += iy * SHIP_ACCEL * dt
-      // Face the travel direction, same angle convention as aiming at a point (see rotateShip).
-      shipAngle.value = Math.atan2(ix, iy) * (180 / Math.PI)
+      // Face the travel direction. The rendered nose points (sin a, cos a) in screen space
+      // (y up), while world +y is down, so the vertical input is negated to line the nose
+      // (and Space fire, which follows it) up with the way we're actually moving.
+      shipAngle.value = Math.atan2(ix, -iy) * (180 / Math.PI)
       hasFacing = true
     }
     // Clamp speed, then decay (lightly while thrusting, harder while coasting).
