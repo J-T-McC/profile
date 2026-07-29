@@ -608,10 +608,14 @@ export default function useThreeStage (active, game) {
     a.vy = (Math.random() * 2 - 1) * speed * 0.3
 
     const margin = sizePx + 24
+    // Sit the rocks well behind the gameplay plane (ship is at z~0), with nearer/bigger ones
+    // less deep than far/small ones. Ortho scale ignores z, so this only affects occlusion:
+    // rocks recede + overlap each other by depth, but always render behind the ship + trail.
+    const bgZ = -(160 + (1 - depth) * 260) // -160 (near) .. -420 (far)
     a.mesh.position.set(
       initial ? Math.random() * viewWidth : (dir > 0 ? -margin : viewWidth + margin),
       Math.random() * viewHeight,
-      0
+      bgZ
     )
     a.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI)
     a.spinX = (Math.random() * 2 - 1) * 0.6
