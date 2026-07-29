@@ -175,10 +175,12 @@ export default function useThreeStage (active, game) {
   let shakeMag = 0
   let lastShipHit = false
 
-  // Drifting 3D asteroids (each { mesh, vx, vy, spin }) plus their lights.
+  // Drifting 3D asteroids (each { mesh, vx, vy, spin }) plus their lights and the coherent
+  // noise used to sculpt their surfaces.
   let asteroids = []
   let asteroidAmbient = null
   let asteroidLight = null
+  let noise = null
 
   // World (container px, +y down) -> scene (same units, +y up).
   const toScene = (x, y) => [x, viewHeight - y]
@@ -396,16 +398,35 @@ export default function useThreeStage (active, game) {
     scene.add(beamMesh)
   }
 
-  // A lumpy low-poly rock: displace an icosahedron's vertices along their radius. Flat
-  // shading (on the material) gives the faceted asteroid look.
+  // A believable rock: start from a well-subdivided icosahedron, squash it into a random
+  // ellipsoid (so it's not a sphere), then push each vertex in/out by multi-octave
+  // coherent noise (fbm) - big lumps from the low octaves, surface roughness from the high
+  // ones. Smooth-shaded so it reads as a solid body rather than a bag of triangles.
   const makeAsteroidGeometry = () => {
-    const geo = new THREE.IcosahedronGeometry(1, 1)
+    const geo = new THREE.IcosahedronGeometry(1, 5)
     const pos = geo.attributes.position
     const v = new THREE.Vector3()
+
+    const ax = 0.7 + Math.random() * 0.6 // ellipsoid axes
+    const ay = 0.7 + Math.random() * 0.6
+    const az = 0.7 + Math.random() * 0.6
+    const ox = Math.random() * 100 // per-rock noise offset
+    const oy = Math.random() * 100
+    const oz = Math.random() * 100
+
     for (let i = 0; i < pos.count; i++) {
-      v.fromBufferAttribute(pos, i).multiplyScalar(0.75 + Math.random() * 0.5)
+      v.fromBufferAttribute(pos, i) // unit direction
+      const nx = v.x; const ny = v.y; const nz = v.z
+      let d = 0; let amp = 0.5; let freq = 1.6
+      for (let o = 0; o < 5; o++) {
+        d += amp * noise.noise(nx * freq + ox, ny * freq + oy, nz * freq + oz)
+        amp *= 0.5; freq *= 2.2
+      }
+      const r = 1 + d * 0.7
+      v.set(nx * ax, ny * ay, nz * az).multiplyScalar(r)
       pos.setXYZ(i, v.x, v.y, v.z)
     }
+    pos.needsUpdate = true
     geo.computeVertexNormals()
     return geo
   }
@@ -453,7 +474,7 @@ export default function useThreeStage (active, game) {
         // transparent:true so it sorts with the rest of the scene by renderOrder (the black
         // background quad is itself a transparent mesh); depth test/write on for correct
         // self-occlusion as it tumbles.
-        new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, flatShading: true, transparent: true })
+        new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, transparent: true })
       )
       mesh.renderOrder = RENDER_ORDER.asteroid
       scene.add(mesh)
@@ -1032,6 +1053,11 @@ export default function useThreeStage (active, game) {
     // Bail if we were torn down - or another start already ran - while importing.
     if (renderer || !active.value || stageCanvas.value !== canvas) return
 
+    // Coherent noise for sculpting the asteroid surfaces (also lazy).
+    const { ImprovedNoise } = await import('three/examples/jsm/math/ImprovedNoise.js')
+    if (renderer || !active.value || stageCanvas.value !== canvas) return
+    noise = new ImprovedNoise()
+
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
     scene = new THREE.Scene()
     // Deep clip range + far camera so the 3D asteroids' z-extent fits. Orthographic scale
@@ -1120,6 +1146,7 @@ export default function useThreeStage (active, game) {
     if (asteroidLight) scene?.remove(asteroidLight)
     asteroidLight?.dispose?.()
     asteroidAmbient = asteroidLight = null
+    noise = null
 
     if (particleGeom) particleGeom.dispose()
     if (particleMat) particleMat.dispose()

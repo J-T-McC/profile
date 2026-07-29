@@ -65,9 +65,11 @@ The requested one. A small pool of **real 3D rocks** drifting across the field s
 even in the ortho scene. This is the first true 3D geometry + lighting in the renderer.
 
 Shipped:
-- Low-poly `IcosahedronGeometry` with a displaced-vertex pass + `flatShading`, lit by one
-  `DirectionalLight` + `AmbientLight` (only the asteroid `MeshStandardMaterial` is lit;
-  every other object is `MeshBasicMaterial` and ignores the lights).
+- Well-subdivided `IcosahedronGeometry` squashed into a random ellipsoid and sculpted with
+  multi-octave coherent noise (fbm via `ImprovedNoise`) - big lumps + surface roughness for
+  a believable rock silhouette - smooth-shaded. Lit by one `DirectionalLight` + `AmbientLight`
+  (only the asteroid `MeshStandardMaterial` is lit; every other object is `MeshBasicMaterial`
+  and ignores the lights).
 - A pool of individual meshes; each spawns off an edge, drifts across, tumbles on a random
   axis, and recycles. Size drives parallax (nearer = bigger, faster, brighter). Rendered
   behind all gameplay; reduced-motion leaves them static.
