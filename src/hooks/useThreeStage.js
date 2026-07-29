@@ -1,6 +1,5 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { POWERUP_STATE } from '@/hooks/useSpaceGame'
-import ufoUrl from '@/assets/ufo.svg'
 import enterpriseUrl from '@/assets/enterprise.svg'
 
 // Phase 2-4 Three.js renderer. Draws every world entity - ship, UFOs, projectiles,
@@ -103,6 +102,12 @@ const DESTROY_DURATION = 1.2 // s
 // ~98% in 1s, matching that transition feel.
 const UFO_DEPTH_RATE = 4
 
+// 3D saucer presentation: a fixed lean so it reads as 3D under the top-down camera, plus a
+// slow spin (with the tilt, the rotation of the rim + lights becomes visible).
+const UFO_TILT = 0.5 // rad
+const UFO_SPIN = 0.8 // rad/s
+const UFO_HULL_COLOR = 0x8f9bb0
+
 const lerp = (a, b, t) => a + (b - a) * t
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1)
 const sampleKeyframes = (frames, p) => {
@@ -137,7 +142,6 @@ export default function useThreeStage (active, game) {
   let viewHeight = 1
 
   // Shared textures.
-  let ufoTexture = null
   let enterpriseTexture = null
   let beamTexture = null
   let glowTexture = null
@@ -648,14 +652,71 @@ export default function useThreeStage (active, game) {
   }
 
   // A UFO plus its health bar (dark track + coloured fill quads).
+  // A procedural flying saucer (radius 0.5 in local space, vertical axis = local +z toward
+  // the camera): a flattened lens hull, a glassy dome, and a glowing under-ring. A tilt +
+  // spin group makes it read as a hovering, rotating 3D saucer. Lit like the ship/asteroids;
+  // materials are per-enemy so each can be tinted/dimmed independently.
+  const makeEnemyBody = () => {
+    const body = new THREE.Group()
+    const tilt = new THREE.Group()
+    tilt.rotation.x = UFO_TILT
+    const spin = new THREE.Group()
+    tilt.add(spin)
+    body.add(tilt)
+
+    const geos = []
+    const mats = []
+    const mkMat = (opts) => {
+      const m = new THREE.MeshStandardMaterial({ transparent: true, ...opts })
+      mats.push(m)
+      return m
+    }
+    const hullBase = new THREE.Color(UFO_HULL_COLOR)
+    const hull = mkMat({ metalness: 0.55, roughness: 0.5 })
+    hull.color.copy(hullBase)
+    const domeMat = mkMat({ color: 0x0a1622, metalness: 0.2, roughness: 0.1, emissive: new THREE.Color(0x1e7fa0), emissiveIntensity: 0.6 })
+    const ringMat = mkMat({ color: 0x05100a, metalness: 0.3, roughness: 0.5, emissive: new THREE.Color(0x39ff14), emissiveIntensity: 1.0 })
+
+    const add = (geo, mat, z, flatZ) => {
+      geos.push(geo)
+      const mesh = new THREE.Mesh(geo, mat)
+      if (flatZ != null) mesh.scale.set(1, 1, flatZ)
+      if (z) mesh.position.z = z
+      spin.add(mesh)
+      return mesh
+    }
+    const disc = add(new THREE.SphereGeometry(0.5, 20, 12), hull, 0, 0.26) // flattened lens hull
+    const dome = add(new THREE.SphereGeometry(0.24, 16, 10), domeMat, 0.1, 0.85)
+    const ring = add(new THREE.TorusGeometry(0.4, 0.03, 8, 28), ringMat, -0.02, null)
+    enableBloom(ring) // the running lights glow
+
+    body.userData.meshes = [disc, dome, ring]
+    body.userData.spin = spin
+    body.userData.hull = hull
+    body.userData.domeMat = domeMat
+    body.userData.ringMat = ringMat
+    body.userData.hullBase = hullBase
+    body.userData.geos = geos
+    body.userData.mats = mats
+    return body
+  }
+
   const makeEnemy = () => {
-    const body = new THREE.Mesh(unitGeometry, basicMat({ map: ufoTexture }))
+    const body = makeEnemyBody()
     const track = new THREE.Mesh(unitGeometry, basicMat({ color: 0x000000, opacity: 0.45 }))
     track.renderOrder = RENDER_ORDER.healthTrack
     const fill = new THREE.Mesh(unitGeometry, basicMat({}))
     fill.renderOrder = RENDER_ORDER.healthFill
     scene.add(body, track, fill)
     return { body, track, fill }
+  }
+
+  const disposeEnemyEntry = (e) => {
+    scene.remove(e.body, e.track, e.fill)
+    e.body.userData.geos?.forEach((g) => g.dispose())
+    e.body.userData.mats?.forEach((m) => m.dispose())
+    e.track.material.dispose()
+    e.fill.material.dispose()
   }
 
   const makeBoltMesh = (kind) => {
@@ -1022,20 +1083,26 @@ export default function useThreeStage (active, game) {
 
       // Anchor the top-left (enemy.x/y) like the old element did, so the eased size grows
       // from the corner rather than shifting the centre.
+      const ud = body.userData
       body.position.set(...toScene(enemy.x + size / 2, enemy.y + size / 2), 0)
-      body.renderOrder = enemy.zIndex
+      // renderOrder is per-mesh (a Group's doesn't propagate), and the saucer spins.
+      for (const m of ud.meshes) m.renderOrder = enemy.zIndex
+      ud.spin.rotation.z += UFO_SPIN * dt
 
       if (enemy.destroyed) {
-        if (body.userData.destroyStart === undefined) body.userData.destroyStart = t
-        const p = clamp01((t - body.userData.destroyStart) / DESTROY_DURATION)
+        if (ud.destroyStart === undefined) ud.destroyStart = t
+        const p = clamp01((t - ud.destroyStart) / DESTROY_DURATION)
         body.scale.setScalar(size * sampleKeyframes(DESTROY_PULSE, p))
-        body.material.color.set(UFO_DESTROYED_COLOR)
+        ud.hull.color.set(UFO_DESTROYED_COLOR)
       } else {
-        body.userData.destroyStart = undefined
-        body.scale.set(size, size, 1)
-        if (enemy.hit) body.material.color.set(UFO_HIT_COLOR)
-        else body.material.color.setScalar(dim)
+        ud.destroyStart = undefined
+        body.scale.setScalar(size)
+        if (enemy.hit) ud.hull.color.set(UFO_HIT_COLOR)
+        else ud.hull.color.copy(ud.hullBase).multiplyScalar(dim)
       }
+      // Fade the emissive accents with depth too.
+      ud.domeMat.emissiveIntensity = 0.6 * dim
+      ud.ringMat.emissiveIntensity = 1.0 * dim
 
       // Health bar just above the UFO (the old CSS anchored it at the enemy's top-left,
       // translated (-2, -10), width = 0.8 * size). Fill is left-aligned; both dim with depth.
@@ -1052,10 +1119,7 @@ export default function useThreeStage (active, game) {
     }
     for (const [id, e] of enemyMeshes) {
       if (!enemies.some((en) => en.id === id)) {
-        for (const m of [e.body, e.track, e.fill]) {
-          scene.remove(m)
-          m.material.dispose()
-        }
+        disposeEnemyEntry(e)
         enemyMeshes.delete(id)
       }
     }
@@ -1307,7 +1371,6 @@ export default function useThreeStage (active, game) {
       return tex
     }
 
-    ufoTexture = load(ufoUrl)
     enterpriseTexture = load(enterpriseUrl)
     beamTexture = makeBeamTexture()
     glowTexture = makeGlowTexture()
@@ -1345,7 +1408,8 @@ export default function useThreeStage (active, game) {
     }
 
     for (const e of enemyMeshes.values()) {
-      e.body.material.dispose()
+      e.body.userData.geos?.forEach((g) => g.dispose())
+      e.body.userData.mats?.forEach((m) => m.dispose())
       e.track.material.dispose()
       e.fill.material.dispose()
     }
@@ -1398,7 +1462,7 @@ export default function useThreeStage (active, game) {
     lastShipHit = false
 
     if (unitGeometry) unitGeometry.dispose()
-    for (const tex of [ufoTexture, enterpriseTexture, beamTexture, glowTexture]) {
+    for (const tex of [enterpriseTexture, beamTexture, glowTexture]) {
       if (tex) tex.dispose()
     }
     Object.values(boltTextures).forEach((t) => t.dispose())
@@ -1416,7 +1480,7 @@ export default function useThreeStage (active, game) {
       renderer.forceContextLoss?.()
     }
     renderer = scene = camera = unitGeometry = null
-    ufoTexture = enterpriseTexture = beamTexture = glowTexture = null
+    enterpriseTexture = beamTexture = glowTexture = null
   }
 
   // The canvas is behind a v-if (alien mode, desktop only), so it only exists in
