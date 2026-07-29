@@ -76,9 +76,13 @@ Shipped:
 - Camera clip range widened + camera pushed back so the rocks' z-extent fits (ortho scale
   is unchanged by distance, so flat sprites are unaffected).
 
+- [x] **Shatter on bolts**: player projectiles overlapping a rock burst rocky debris (via
+  the particle pool) + a small shake and recycle it. The bolt is deliberately not consumed
+  (asteroids are background decor), so shots aimed at UFOs still pass through.
+
 Still open:
 - [ ] Instanced version if we ever want dozens.
-- [ ] Gameplay hooks: collide with bolts to shatter (particles!), or damage the ship.
+- [ ] Damage the ship on contact / make them a real gameplay hazard.
 
 _Effort: M (cosmetic) / L (collidable). Impact: high — first true 3D geometry._
 

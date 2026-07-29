@@ -911,6 +911,38 @@ export default function useThreeStage (active, game) {
     }
   }
 
+  // Player bolts shatter drifting asteroids: on overlap, burst rocky debris and recycle the
+  // rock. The bolt is intentionally NOT consumed - asteroids are background decor, so a shot
+  // aimed at a UFO still passes through to hit it.
+  const shatterAsteroids = () => {
+    const bolts = game.projectiles
+    if (!bolts.length) return
+    for (const a of asteroids) {
+      const px = a.mesh.position.x
+      const py = a.mesh.position.y
+      const rad = a.mesh.scale.x * 0.9
+      const rad2 = rad * rad
+      for (const p of bolts) {
+        if (p.owner === 'alien') continue // enemy fire ignores background rocks
+        const [bx, by] = toScene(p.x, p.y)
+        const dx = bx - px
+        const dy = by - py
+        if (dx * dx + dy * dy <= rad2) {
+          emitBurst(px, py, {
+            count: 20,
+            color: 0x9c7f5f,
+            speed: 90 + a.mesh.scale.x * 1.2, speedVar: 0.7,
+            life: 0.6, lifeVar: 0.5,
+            size0: Math.max(4, a.mesh.scale.x * 0.16), size1: 1, drag: 3,
+          })
+          addShake(3)
+          resetAsteroid(a, false) // send it back off an edge; the debris sells the break
+          break
+        }
+      }
+    }
+  }
+
   const reconcilePowerUps = (t) => {
     const powerUps = game.powerUps
     // Idle bob-scale, matching @keyframes power-up-idle (1 -> 1.12 over 1.6s).
@@ -972,6 +1004,7 @@ export default function useThreeStage (active, game) {
       updateAlly(t)
       reconcileEnemies(t, dt)
       reconcileBolts()
+      shatterAsteroids()
       reconcilePowerUps(t)
       updateParticles(dt)
     }
