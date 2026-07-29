@@ -105,7 +105,7 @@ const UFO_DEPTH_RATE = 4
 // 3D Borg-style cube: a dark greebled metal cube that tumbles on all three axes, with a
 // handful of glowing green lights.
 const UFO_SPIN = 0.7 // rad/s base tumble rate
-const UFO_HULL_COLOR = 0x3b424b
+const UFO_HULL_COLOR = 0x6b7280
 const UFO_LIGHT_EMISSIVE = 0.45 // keep the green lights lit but with only a gentle bloom
 const ENEMY_Z = -30 // just behind the gameplay plane so the player ship stays on top
 
@@ -670,42 +670,59 @@ export default function useThreeStage (active, game) {
       return m
     }
     const hullBase = new THREE.Color(UFO_HULL_COLOR)
-    const hull = mkMat({ metalness: 0.4, roughness: 0.6 })
+    // Low metalness (metals go black with no environment map) + a faint emissive lift so the
+    // shadowed faces don't read as pure black.
+    const hull = mkMat({ metalness: 0.18, roughness: 0.7, emissive: new THREE.Color(0x2a2f37), emissiveIntensity: 0.35 })
     hull.color.copy(hullBase)
     const lightMat = mkMat({ color: 0x061006, metalness: 0.3, roughness: 0.5, emissive: new THREE.Color(0x39ff14), emissiveIntensity: 1.0 })
 
     const S = 0.58
     const half = S / 2
     const faces = [['x', 1], ['x', -1], ['y', 1], ['y', -1], ['z', 1], ['z', -1]]
+    // Thin panels (thin axis = local +z) laid flat on the faces: fine surface detail that
+    // keeps the crisp cube silhouette. The lights are small cubes.
     const greebleBases = [
-      new THREE.BoxGeometry(0.12, 0.12, 0.08),
-      new THREE.BoxGeometry(0.2, 0.08, 0.06),
-      new THREE.BoxGeometry(0.07, 0.07, 0.14),
-      new THREE.BoxGeometry(0.16, 0.16, 0.05),
+      new THREE.BoxGeometry(0.16, 0.10, 0.06),
+      new THREE.BoxGeometry(0.10, 0.18, 0.05),
+      new THREE.BoxGeometry(0.07, 0.07, 0.07),
+      new THREE.BoxGeometry(0.20, 0.06, 0.05),
+      new THREE.BoxGeometry(0.12, 0.12, 0.05),
     ]
-    const mtx = new THREE.Matrix4()
-    // A greeble box centred on a random face (half sunk into the cube, half proud).
-    const placeGreeble = () => {
-      const g = greebleBases[(Math.random() * greebleBases.length) | 0].clone()
+    const lightBases = [new THREE.BoxGeometry(0.05, 0.05, 0.05)]
+
+    const _q = new THREE.Quaternion()
+    const _spin = new THREE.Quaternion()
+    const _pos = new THREE.Vector3()
+    const _scl = new THREE.Vector3(1, 1, 1)
+    const _m = new THREE.Matrix4()
+    const _euler = new THREE.Euler()
+    const _zAxis = new THREE.Vector3(0, 0, 1)
+    // Clone a base, orient its thin (+z) axis to the chosen face normal (plus a random 90°
+    // in-plane turn) and seat it on that face, flush with a little relief.
+    const placeGreeble = (bases) => {
+      const g = bases[(Math.random() * bases.length) | 0].clone()
       const [axis, sign] = faces[(Math.random() * 6) | 0]
-      const u = (Math.random() * 2 - 1) * half * 0.85
-      const v = (Math.random() * 2 - 1) * half * 0.85
-      let x = 0; let y = 0; let z = 0
-      if (axis === 'x') { x = sign * half; y = u; z = v } else if (axis === 'y') { x = u; y = sign * half; z = v } else { x = u; y = v; z = sign * half }
-      g.applyMatrix4(mtx.makeTranslation(x, y, z))
+      const u = (Math.random() * 2 - 1) * half * 0.8
+      const v = (Math.random() * 2 - 1) * half * 0.8
+      if (axis === 'x') { _euler.set(0, sign * Math.PI / 2, 0); _pos.set(sign * half, u, v) } else if (axis === 'y') { _euler.set(-sign * Math.PI / 2, 0, 0); _pos.set(u, sign * half, v) } else { _euler.set(sign < 0 ? Math.PI : 0, 0, 0); _pos.set(u, v, sign * half) }
+      _q.setFromEuler(_euler)
+      _spin.setFromAxisAngle(_zAxis, Math.random() < 0.5 ? 0 : Math.PI / 2)
+      _q.multiply(_spin)
+      g.applyMatrix4(_m.compose(_pos, _q, _scl))
       return g
     }
 
     const hullGeos = [new THREE.BoxGeometry(S, S, S)]
     const lightGeos = []
-    for (let i = 0; i < 54; i++) hullGeos.push(placeGreeble())
-    for (let i = 0; i < 8; i++) lightGeos.push(placeGreeble())
+    for (let i = 0; i < 96; i++) hullGeos.push(placeGreeble(greebleBases))
+    for (let i = 0; i < 26; i++) lightGeos.push(placeGreeble(lightBases))
 
     const hullGeo = mergeGeometries(hullGeos)
     const lightGeo = mergeGeometries(lightGeos)
     hullGeos.forEach((g) => g.dispose())
     lightGeos.forEach((g) => g.dispose())
     greebleBases.forEach((g) => g.dispose())
+    lightBases.forEach((g) => g.dispose())
 
     const hullMesh = new THREE.Mesh(hullGeo, hull)
     const lightMesh = new THREE.Mesh(lightGeo, lightMat)
