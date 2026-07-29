@@ -35,7 +35,7 @@ const FLEE_COOLDOWN_MIN = 250       // ms - reaction time floor at high levels
 const FLEE_RADIUS_START = 35        // px - level 1: cursor has to get quite close to spook it
 const FLEE_RADIUS_MAX = 130         // px - detection range ceiling at high levels
 const UFO_SPEED_MULTIPLIER_START = 0.35 // level 1: dodges away sluggishly
-const UFO_SPEED_MULTIPLIER_MAX = 1.6    // dodge speed ceiling at high levels
+const UFO_SPEED_MULTIPLIER_MAX = 1.2    // dodge speed ceiling at high levels
 
 // The UFO's return fire - unlocked at ALIEN_FIRE_MIN_LEVEL. There's no player health, so
 // getting hit instead heals the UFO by 1 - fires rarely right when it unlocks, and more
@@ -93,7 +93,7 @@ const LOW_HEALTH_DEFENSIVE_WEIGHT_BONUS = 8
 
 // Temporary AI ally (a Star Trek-style starship) - warps in on pickup, patrols the field
 // and auto-fires homing phasers at the nearest enemy for its duration, then warps out.
-const ALLY_MIN_LEVEL = 6
+const ALLY_MIN_LEVEL = 5
 const ALLY_DURATION = 12000         // base ms the ally fights before warping out (level-scaled)
 const ALLY_WARP_IN_DURATION = 700   // ms - must match the ally-warp-in CSS animation
 const ALLY_WARP_OUT_DURATION = 700  // ms - must match the ally-warp-out CSS animation
@@ -123,10 +123,10 @@ const POWERUP_TYPES = {
   rapid3: { minLevel: 5, category: POWERUP_CATEGORY.WEAPON, label: '3×', color: '#818cf8', fireRateMultiplier: 3 },
   double: { minLevel: 5, category: POWERUP_CATEGORY.WEAPON, label: '2•', color: '#facc15', doubleShot: true },
   rapid4: { minLevel: 7, category: POWERUP_CATEGORY.WEAPON, label: '4×', color: '#f472b6', fireRateMultiplier: 4 },
-  laser: { minLevel: 8, category: POWERUP_CATEGORY.WEAPON, label: 'L', color: '#34d399', laser: true },
+  laser: { minLevel: 10, category: POWERUP_CATEGORY.WEAPON, label: 'L', color: '#34d399', laser: true },
   health: { minLevel: 4, category: POWERUP_CATEGORY.HEALTH, label: '♥', color: '#f87171', weight: 0.5, restore: HEALTH_ITEM_RESTORE },
   shield: { minLevel: 5, category: POWERUP_CATEGORY.SHIELD, label: '⛊', color: '#22d3ee', weight: 0.5, duration: SHIELD_BUFF_DURATION },
-  ally: { minLevel: ALLY_MIN_LEVEL, category: POWERUP_CATEGORY.ALLY, label: 'NCC', color: '#a5b4fc', weight: 0.4, duration: ALLY_DURATION },
+  ally: { minLevel: ALLY_MIN_LEVEL, category: POWERUP_CATEGORY.ALLY, label: 'NCC', color: '#a5b4fc', weight: 0.5, duration: ALLY_DURATION },
 }
 
 

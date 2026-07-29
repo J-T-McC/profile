@@ -25,7 +25,7 @@ const SHIP_TEXTURE_URL =
 const BG_STAR_COUNT = 3600
 const BG_NEAR = 60 // nearest star depth (world units) - kept far so we're not "flying through"
 const BG_FAR = 320 // farthest
-const BG_PARALLAX = 1.2 // how far the bg camera slides with the ship (world units) - subtle
+const BG_PARALLAX = 0.5 // how far the bg camera slides with the ship (world units) - subtle
 const BG_PARALLAX_RATE = 2.5 // easing toward the parallax target (per second)
 const BG_DRIFT = 0.005 // slow galactic spin (rad/s)
 
