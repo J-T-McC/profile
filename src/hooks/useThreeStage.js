@@ -48,7 +48,7 @@ const UFO_DESTROYED_COLOR = 0xfde047 // ufo-destroyed yellow
 // Projectile look, from SvgWeapon.vue's CSS. core = visible dot; the quad is drawn
 // larger so the baked-in radial glow has room to fall off.
 const BOLT_STYLES = {
-  player: { core: 12, rgb: '252,165,165', glow: '248,113,113' },
+  player: { core: 9.6, rgb: '252,165,165', glow: '248,113,113' }, // 20% smaller round bolt
   alien: { core: 12, rgb: '134,239,172', glow: '74,222,128' },
   laser: { core: 16, rgb: '236,254,255', glow: '34,211,238' },
 }

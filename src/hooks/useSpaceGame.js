@@ -2,6 +2,7 @@ import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import useLocalStore from '@/hooks/useLocalStore'
 
 const UFO_MAX_SIZE = 75
+const UFO_MIN_SIZE = 38 // ~50% of max - floor so the depth illusion doesn't shrink it to a speck
 const SHIP_FOLLOW_RATE = 12         // 1/s - how fast the ship closes the gap to its target (higher = snappier)
 const ARRIVE_THRESHOLD = 0.5        // px - snap to target once this close, instead of easing forever
 
@@ -611,7 +612,7 @@ export default function useSpaceGame (isActive) {
   // moving the enemy. Used both by randomizeEnemy and by the occasional idle "breathing".
   const rerollEnemyDepth = (enemy) => {
     const durationSeconds = Math.ceil(Math.random() * 3)
-    const size = Math.ceil(Math.random() * UFO_MAX_SIZE)
+    const size = Math.round(UFO_MIN_SIZE + Math.random() * (UFO_MAX_SIZE - UFO_MIN_SIZE))
     enemy.size = size
     enemy.brightness = Math.max(40, (size / UFO_MAX_SIZE) * 100)
     enemy.zIndex = size >= (UFO_MAX_SIZE * 0.8) ? 12 : 1
