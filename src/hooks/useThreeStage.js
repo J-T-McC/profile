@@ -106,7 +106,7 @@ const UFO_DEPTH_RATE = 4
 // handful of glowing green lights.
 const UFO_SPIN = 0.7 // rad/s base tumble rate
 const UFO_HULL_COLOR = 0x6b7280
-const UFO_LIGHT_EMISSIVE = 0.45 // keep the green lights lit but with only a gentle bloom
+const UFO_LIGHT_EMISSIVE = 0.22 // small lit "windows" - a soft glow, not a bright block
 const ENEMY_Z = -30 // just behind the gameplay plane so the player ship stays on top
 
 const lerp = (a, b, t) => a + (b - a) * t
@@ -688,7 +688,12 @@ export default function useThreeStage (active, game) {
       new THREE.BoxGeometry(0.20, 0.06, 0.05),
       new THREE.BoxGeometry(0.12, 0.12, 0.05),
     ]
-    const lightBases = [new THREE.BoxGeometry(0.05, 0.05, 0.05)]
+    // Small, thin windows flush on the faces (like lit windows on the hull).
+    const lightBases = [
+      new THREE.BoxGeometry(0.035, 0.025, 0.02),
+      new THREE.BoxGeometry(0.022, 0.045, 0.02),
+      new THREE.BoxGeometry(0.03, 0.03, 0.02),
+    ]
 
     const _q = new THREE.Quaternion()
     const _spin = new THREE.Quaternion()
@@ -715,7 +720,7 @@ export default function useThreeStage (active, game) {
     const hullGeos = [new THREE.BoxGeometry(S, S, S)]
     const lightGeos = []
     for (let i = 0; i < 96; i++) hullGeos.push(placeGreeble(greebleBases))
-    for (let i = 0; i < 26; i++) lightGeos.push(placeGreeble(lightBases))
+    for (let i = 0; i < 34; i++) lightGeos.push(placeGreeble(lightBases))
 
     const hullGeo = mergeGeometries(hullGeos)
     const lightGeo = mergeGeometries(lightGeos)
