@@ -4,6 +4,14 @@ import useLocalStore from '@/hooks/useLocalStore'
 const UFO_MAX_SIZE = 75
 const SHIP_FOLLOW_RATE = 12         // 1/s - how fast the ship closes the gap to its target (higher = snappier)
 const ARRIVE_THRESHOLD = 0.5        // px - snap to target once this close, instead of easing forever
+
+// Arrow-key flight: thrust builds velocity, which decays (glide) when the keys release.
+const SHIP_ACCEL = 2600             // px/s^2 - thrust acceleration
+const SHIP_MAX_SPEED = 620          // px/s - top fly speed
+const SHIP_THRUST_FRICTION = 1.5    // 1/s - light velocity decay while thrusting
+const SHIP_COAST_FRICTION = 4       // 1/s - stronger decay when coasting, for a short glide to a stop
+const SHIP_COAST_STOP = 8           // px/s - below this the ship counts as stopped (click-warp can resume)
+const ARROW_DIRS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }
 const PROJECTILE_SPEED = 900        // px/s
 const PROJECTILE_MAX_DISTANCE = 1200 // px travelled before a shot is considered a miss
 const PROJECTILE_HIT_PADDING = 10   // px of extra forgiveness added to the UFO's on-screen radius
@@ -321,6 +329,11 @@ export default function useSpaceGame (isActive) {
   let shipY = 0
   let shipTargetX = 0
   let shipTargetY = 0
+
+  // Arrow-key flight velocity + which direction keys are currently held.
+  let shipVX = 0
+  let shipVY = 0
+  const heldKeys = { up: false, down: false, left: false, right: false }
 
   // Last known cursor position (same coordinate space as the ship/enemies), used so
   // enemies can continuously evade a lingering cursor rather than only reacting once.
@@ -1181,6 +1194,14 @@ export default function useSpaceGame (isActive) {
   }
 
   const onKeyDown = (event) => {
+    const dir = ARROW_DIRS[event.key]
+    if (dir) {
+      event.preventDefault() // don't scroll the page
+      dismissHint()
+      heldKeys[dir] = true
+      return
+    }
+
     if (event.code === 'Space' || event.key === ' ') {
       event.preventDefault()
       dismissHint()
@@ -1208,6 +1229,14 @@ export default function useSpaceGame (isActive) {
       if (now - lastCheatKeyTime > CHEAT_BUFFER_TIMEOUT) cheatBuffer = ''
       lastCheatKeyTime = now
       cheatBuffer = (cheatBuffer + event.key).slice(-24)
+    }
+  }
+
+  const onKeyUp = (event) => {
+    const dir = ARROW_DIRS[event.key]
+    if (dir) {
+      event.preventDefault()
+      heldKeys[dir] = false
     }
   }
 
@@ -1264,20 +1293,63 @@ export default function useSpaceGame (isActive) {
       return
     }
 
-    // Ease the ship toward its target - covers a fraction of the remaining distance
-    // each frame (framerate-independent), so it starts fast and decelerates into
-    // place instead of sliding at a constant speed and snapping to a dead stop.
-    const dx = shipTargetX - shipX
-    const dy = shipTargetY - shipY
-    const distance = Math.hypot(dx, dy)
-    if (distance > ARRIVE_THRESHOLD) {
-      const followT = 1 - Math.exp(-SHIP_FOLLOW_RATE * dt)
-      shipX += dx * followT
-      shipY += dy * followT
-    } else {
-      shipX = shipTargetX
-      shipY = shipTargetY
+    const radarW = container.value.offsetWidth
+    const radarH = container.value.offsetHeight
+
+    // Arrow-key flight. Held keys thrust the ship (building velocity), it faces its travel
+    // direction, and it coasts to a stop when released. Thrusting pins the click-warp target
+    // to the current spot so the two control schemes don't fight.
+    let ix = (heldKeys.right ? 1 : 0) - (heldKeys.left ? 1 : 0)
+    let iy = (heldKeys.down ? 1 : 0) - (heldKeys.up ? 1 : 0)
+    const thrusting = ix !== 0 || iy !== 0
+    if (thrusting) {
+      const il = Math.hypot(ix, iy)
+      ix /= il; iy /= il
+      shipVX += ix * SHIP_ACCEL * dt
+      shipVY += iy * SHIP_ACCEL * dt
+      // Face the travel direction, same angle convention as aiming at a point (see rotateShip).
+      shipAngle.value = Math.atan2(ix, iy) * (180 / Math.PI)
+      hasFacing = true
     }
+    // Clamp speed, then decay (lightly while thrusting, harder while coasting).
+    const speed = Math.hypot(shipVX, shipVY)
+    if (speed > SHIP_MAX_SPEED) {
+      const s = SHIP_MAX_SPEED / speed
+      shipVX *= s; shipVY *= s
+    }
+    const decay = Math.exp(-(thrusting ? SHIP_THRUST_FRICTION : SHIP_COAST_FRICTION) * dt)
+    shipVX *= decay; shipVY *= decay
+    shipX += shipVX * dt
+    shipY += shipVY * dt
+
+    // While the ship is under velocity control, keep the target pinned so the warp-ease stays
+    // idle; only when stopped does a click-warp target take over and ease the ship in.
+    if (thrusting || Math.hypot(shipVX, shipVY) > SHIP_COAST_STOP) {
+      shipTargetX = shipX
+      shipTargetY = shipY
+    } else {
+      // Ease the ship toward its (click-warp) target - starts fast, decelerates into place.
+      const dx = shipTargetX - shipX
+      const dy = shipTargetY - shipY
+      if (Math.hypot(dx, dy) > ARRIVE_THRESHOLD) {
+        const followT = 1 - Math.exp(-SHIP_FOLLOW_RATE * dt)
+        shipX += dx * followT
+        shipY += dy * followT
+      } else {
+        shipX = shipTargetX
+        shipY = shipTargetY
+      }
+    }
+
+    // Keep the ship on the field (shipX/shipY is the centre, so inset by half its size),
+    // killing only the into-wall velocity so it slides along edges instead of sticking.
+    const minX = SHIP_SIZE / 2
+    const maxX = Math.max(minX, radarW - SHIP_SIZE / 2)
+    const minY = SHIP_SIZE / 2
+    const maxY = Math.max(minY, radarH - SHIP_SIZE / 2)
+    if (shipX < minX) { shipX = minX; if (shipVX < 0) shipVX = 0 } else if (shipX > maxX) { shipX = maxX; if (shipVX > 0) shipVX = 0 }
+    if (shipY < minY) { shipY = minY; if (shipVY < 0) shipVY = 0 } else if (shipY > maxY) { shipY = maxY; if (shipVY > 0) shipVY = 0 }
+
     // Warp squash-and-stretch eases back to neutral here (the renderer reads shipStretch
     // directly each frame), replacing the old CSS-transition-driven settle.
     if (shipStretch !== 1) {
@@ -1285,8 +1357,6 @@ export default function useSpaceGame (isActive) {
       if (Math.abs(shipStretch - 1) < 0.01) shipStretch = 1
     }
 
-    const radarW = container.value.offsetWidth
-    const radarH = container.value.offsetHeight
     radarShip.x = clamp(shipX / radarW, 0, 1)
     radarShip.y = clamp(shipY / radarH, 0, 1)
 
@@ -1574,6 +1644,9 @@ export default function useSpaceGame (isActive) {
     shipY = SHIP_SIZE / 2
     shipTargetX = SHIP_SIZE / 2
     shipTargetY = SHIP_SIZE / 2
+    shipVX = 0
+    shipVY = 0
+    heldKeys.up = heldKeys.down = heldKeys.left = heldKeys.right = false
     shipStretch = 1
     shipAngle.value = 0
     hasFacing = false
@@ -1674,6 +1747,7 @@ export default function useSpaceGame (isActive) {
     moveShip,
     handleClick,
     onKeyDown,
+    onKeyUp,
     ufoClicked,
     getShipRenderState,
   }

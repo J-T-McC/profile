@@ -42,7 +42,7 @@
           <div v-if="ally.active" class="radar-blip radar-blip--ally" :style="{left: (ally.radarX * 100) + '%', top: (ally.radarY * 100) + '%'}"></div>
         </div>
       </div>
-      <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Click to fly &middot; click the UFO to shoot &middot; Space to fire</div>
+      <div v-if="hintVisible" class="hint absolute top-2 right-2 z-10 text-white text-sm bg-black bg-opacity-40 px-3 py-1 rounded-full pointer-events-none">Arrow keys to fly &middot; click to warp &middot; click the UFO to shoot &middot; Space to fire</div>
       <!-- Three.js stage: renders the starfield and every world entity (ship, UFOs,
            projectiles, ally, phaser beam, power-ups). z-index 0 so it sits below the
            DOM overlays (HUD/radar/health bars/effects). pointer-events-none so it
@@ -139,6 +139,7 @@ export default {
       radarShip,
       rotateShip,
       onKeyDown,
+      onKeyUp,
       handleClick,
       getShipRenderState,
     } = useSpaceGame(mode.isAlienMode)
@@ -160,6 +161,14 @@ export default {
       if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || event.target?.isContentEditable) return
 
       onKeyDown(event)
+    }
+
+    // Arrow-key release (to stop thrusting). Same window binding + guards as keydown.
+    const onWindowKeyUp = (event) => {
+      if (!active.value) return
+      const targetTag = event.target?.tagName
+      if (targetTag === 'INPUT' || targetTag === 'TEXTAREA' || event.target?.isContentEditable) return
+      onKeyUp(event)
     }
 
     // Full-screen mode for the game section only. We put the game's own container
@@ -187,11 +196,13 @@ export default {
 
     onMounted(() => {
       window.addEventListener('keydown', onWindowKeyDown)
+      window.addEventListener('keyup', onWindowKeyUp)
       document.addEventListener('fullscreenchange', onFullscreenChange)
     })
 
     onUnmounted(() => {
       window.removeEventListener('keydown', onWindowKeyDown)
+      window.removeEventListener('keyup', onWindowKeyUp)
       document.removeEventListener('fullscreenchange', onFullscreenChange)
     })
 
