@@ -55,11 +55,16 @@ const RENDER_ORDER = {
   beam: 18,
   powerUp: 19,
   bolt: 20,
+  particles: 21, // sparks/debris/thruster - above bolts, below the ship
   shipGlow: 23,
   ship: 25,
 } // enemies use their own zIndex (1 or 12)
 
 const HEALTH_BAR_HEIGHT = 5 // px, matches the old .ufo-health-track
+
+// Additive GPU particle pool, recycled ring-buffer style. One Points object drives every
+// burst/trail effect; PARTICLE_MAX caps the live count.
+const PARTICLE_MAX = 700
 
 // Twinkling drift, matching @keyframes move-twink-back (-10000px, 5000px over 300s).
 const TWINKLE_VX = -10000 / 300 // px/s
@@ -130,6 +135,18 @@ export default function useThreeStage (active, game) {
   const enemyMeshes = new Map() // enemy.id -> { body, track, fill }
   const boltMeshes = new Map() // projectile.id -> Mesh
   const powerUpMeshes = new Map() // powerUp.id -> Mesh
+
+  // Particle pool. GPU attributes (pPos/pColor/pSize/pAlpha) plus CPU-only sim state
+  // (velocity, remaining life, size ramp, drag). Emitters write into a recycled slot.
+  let particlePoints = null
+  let particleGeom = null
+  let particleMat = null
+  let pPos, pColor, pSize, pAlpha, pVel, pLife, pMaxLife, pSize0, pSize1, pDrag
+  let pCursor = 0
+  let scratchColor = null
+  let prefersReducedMotion = false
+  let lastShipX = null
+  let lastShipY = null
 
   // World (container px, +y down) -> scene (same units, +y up).
   const toScene = (x, y) => [x, viewHeight - y]
@@ -269,6 +286,9 @@ export default function useThreeStage (active, game) {
     fitBackgroundQuad(bgMesh, null)
     fitBackgroundQuad(starsMesh, starsTexture)
     fitBackgroundQuad(twinkleMesh, twinkleTexture)
+
+    // gl_PointSize is in framebuffer px, so it must track the renderer pixel ratio.
+    if (particleMat) particleMat.uniforms.uPixelRatio.value = renderer.getPixelRatio()
   }
 
   // --- Builders --------------------------------------------------------------
@@ -352,6 +372,130 @@ export default function useThreeStage (active, game) {
     return mesh
   }
 
+  // --- Particles -------------------------------------------------------------
+
+  const PARTICLE_VERT = `
+    attribute vec3 acolor;
+    attribute float asize;
+    attribute float aalpha;
+    uniform float uPixelRatio;
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+      vColor = acolor;
+      vAlpha = aalpha;
+      gl_PointSize = asize * uPixelRatio;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `
+  const PARTICLE_FRAG = `
+    uniform sampler2D map;
+    varying vec3 vColor;
+    varying float vAlpha;
+    void main() {
+      vec4 tex = texture2D(map, gl_PointCoord);
+      // Additive blend: contribution is rgb * a, so the alpha both fades the particle
+      // and applies the soft-dot texture falloff.
+      gl_FragColor = vec4(vColor, tex.a * vAlpha);
+    }
+  `
+
+  const buildParticles = () => {
+    pPos = new Float32Array(PARTICLE_MAX * 3)
+    pColor = new Float32Array(PARTICLE_MAX * 3)
+    pSize = new Float32Array(PARTICLE_MAX)
+    pAlpha = new Float32Array(PARTICLE_MAX)
+    pVel = new Float32Array(PARTICLE_MAX * 3)
+    pLife = new Float32Array(PARTICLE_MAX)
+    pMaxLife = new Float32Array(PARTICLE_MAX)
+    pSize0 = new Float32Array(PARTICLE_MAX)
+    pSize1 = new Float32Array(PARTICLE_MAX)
+    pDrag = new Float32Array(PARTICLE_MAX)
+
+    particleGeom = new THREE.BufferGeometry()
+    particleGeom.setAttribute('position', new THREE.BufferAttribute(pPos, 3))
+    particleGeom.setAttribute('acolor', new THREE.BufferAttribute(pColor, 3))
+    particleGeom.setAttribute('asize', new THREE.BufferAttribute(pSize, 1))
+    particleGeom.setAttribute('aalpha', new THREE.BufferAttribute(pAlpha, 1))
+
+    particleMat = new THREE.ShaderMaterial({
+      uniforms: {
+        map: { value: glowTexture },
+        uPixelRatio: { value: renderer.getPixelRatio() },
+      },
+      vertexShader: PARTICLE_VERT,
+      fragmentShader: PARTICLE_FRAG,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    })
+
+    particlePoints = new THREE.Points(particleGeom, particleMat)
+    particlePoints.renderOrder = RENDER_ORDER.particles
+    particlePoints.frustumCulled = false // positions roam; skip the stale-bounds cull
+    scene.add(particlePoints)
+  }
+
+  // Claim the next ring-buffer slot (overwriting the oldest once full). Coords are scene
+  // space (+y up); callers convert via toScene.
+  const spawnParticle = (x, y, vx, vy, r, g, b, life, size0, size1, drag) => {
+    const i = pCursor
+    pCursor = (pCursor + 1) % PARTICLE_MAX
+    const i3 = i * 3
+    pPos[i3] = x; pPos[i3 + 1] = y; pPos[i3 + 2] = 0
+    pVel[i3] = vx; pVel[i3 + 1] = vy; pVel[i3 + 2] = 0
+    pColor[i3] = r; pColor[i3 + 1] = g; pColor[i3 + 2] = b
+    pLife[i] = life; pMaxLife[i] = life
+    pSize0[i] = size0; pSize1[i] = size1; pDrag[i] = drag
+    pSize[i] = size0; pAlpha[i] = 1
+  }
+
+  // Fire a spray of particles from (x, y) in scene space. angle=null -> radial burst.
+  const emitBurst = (x, y, opts) => {
+    if (!particlePoints || prefersReducedMotion) return
+    const {
+      count = 12, color = 0xffffff, speed = 120, speedVar = 0.6,
+      life = 0.6, lifeVar = 0.4, size0 = 10, size1 = 2, drag = 3,
+      angle = null, spread = Math.PI * 2,
+    } = opts || {}
+    scratchColor.set(color)
+    const { r, g, b } = scratchColor
+    for (let n = 0; n < count; n++) {
+      const a = angle == null
+        ? Math.random() * Math.PI * 2
+        : angle + (Math.random() - 0.5) * spread
+      const sp = speed * (1 - speedVar + Math.random() * 2 * speedVar)
+      const ln = life * (1 - lifeVar + Math.random() * 2 * lifeVar)
+      spawnParticle(x, y, Math.cos(a) * sp, Math.sin(a) * sp, r, g, b, ln, size0, size1, drag)
+    }
+  }
+
+  const updateParticles = (dt) => {
+    if (!particlePoints) return
+    let any = false
+    for (let i = 0; i < PARTICLE_MAX; i++) {
+      if (pLife[i] <= 0) continue
+      pLife[i] -= dt
+      const i3 = i * 3
+      if (pLife[i] <= 0) { pAlpha[i] = 0; pSize[i] = 0; any = true; continue }
+      const frac = pLife[i] / pMaxLife[i] // 1 at birth -> 0 at death
+      const d = Math.exp(-pDrag[i] * dt)
+      pVel[i3] *= d; pVel[i3 + 1] *= d
+      pPos[i3] += pVel[i3] * dt
+      pPos[i3 + 1] += pVel[i3 + 1] * dt
+      pSize[i] = pSize1[i] + (pSize0[i] - pSize1[i]) * frac
+      pAlpha[i] = frac
+      any = true
+    }
+    if (any) {
+      particleGeom.attributes.position.needsUpdate = true
+      particleGeom.attributes.acolor.needsUpdate = true
+      particleGeom.attributes.asize.needsUpdate = true
+      particleGeom.attributes.aalpha.needsUpdate = true
+    }
+  }
+
   // --- Per-frame updates -----------------------------------------------------
 
   const updateStarfield = (t) => {
@@ -367,9 +511,36 @@ export default function useThreeStage (active, game) {
     shipGroup.visible = s.visible
     shipHitGlow.visible = s.visible && s.hit
     shipShieldGlow.visible = s.visible && s.shielded
-    if (!s.visible) return
+    if (!s.visible) {
+      lastShipX = lastShipY = null
+      return
+    }
 
     const [cx, cy] = toScene(s.x, s.y) // s.x/s.y is the ship centre
+
+    // Thruster trail: emit a couple of particles behind the ship while it's actually
+    // moving (compare against last frame's position - the game only tracks position, not
+    // velocity). Behind = opposite the movement vector, in scene space (+y up).
+    if (lastShipX != null) {
+      const mvx = s.x - lastShipX
+      const mvy = s.y - lastShipY
+      const mvLen = Math.hypot(mvx, mvy)
+      if (mvLen > 0.6) {
+        const bx = -mvx / mvLen
+        const by = mvy / mvLen // world +y is down; scene +y is up, so flip
+        emitBurst(cx + bx * SHIP_SIZE * 0.4, cy + by * SHIP_SIZE * 0.4, {
+          count: 2,
+          color: 0x93c5fd,
+          angle: Math.atan2(by, bx),
+          spread: 0.7,
+          speed: 60, speedVar: 0.5,
+          life: 0.45, lifeVar: 0.5,
+          size0: 9, size1: 1, drag: 2.5,
+        })
+      }
+    }
+    lastShipX = s.x
+    lastShipY = s.y
     shipGroup.position.set(cx, cy, 0)
     // CSS rotate() is clockwise in screen space; scene +y is up, so negate.
     shipGroup.rotation.z = -THREE.MathUtils.degToRad(s.angle)
@@ -449,6 +620,27 @@ export default function useThreeStage (active, game) {
         enemyMeshes.set(enemy.id, e)
       }
       const { body, track, fill } = e
+
+      // Debris fires on the destroyed transition. The game hides the UFO (visible=false)
+      // the same frame it's destroyed, so emit here - before the visibility early-out -
+      // using the kill-site position/size the game keeps until respawn.
+      if (enemy.destroyed) {
+        if (!body.userData.debrisDone) {
+          body.userData.debrisDone = true
+          const dsize = body.userData.renderSize ?? enemy.size
+          const [dcx, dcy] = toScene(enemy.x + dsize / 2, enemy.y + dsize / 2)
+          emitBurst(dcx, dcy, {
+            count: 18,
+            color: UFO_DESTROYED_COLOR,
+            speed: 140 * (dsize / 40), speedVar: 0.7,
+            life: 0.7, lifeVar: 0.5,
+            size0: Math.max(6, dsize * 0.25), size1: 1, drag: 3.2,
+          })
+        }
+      } else {
+        body.userData.debrisDone = false
+      }
+
       body.visible = track.visible = fill.visible = enemy.visible
       if (!enemy.visible) {
         body.userData.destroyStart = undefined
@@ -548,7 +740,17 @@ export default function useThreeStage (active, game) {
 
       if (p.state === POWERUP_STATE.COLLECTED) {
         // Collect pop: scale to 2.2 and fade over 0.3s (@ .power-up--collected).
-        if (mesh.userData.collectStart === undefined) mesh.userData.collectStart = t
+        if (mesh.userData.collectStart === undefined) {
+          mesh.userData.collectStart = t
+          const [scx, scy] = toScene(p.x, p.y)
+          emitBurst(scx, scy, {
+            count: 16,
+            color: p.color,
+            speed: 130, speedVar: 0.6,
+            life: 0.55, lifeVar: 0.5,
+            size0: 8, size1: 1, drag: 3,
+          })
+        }
         const cp = clamp01((t - mesh.userData.collectStart) / 0.3)
         mesh.visible = cp < 1
         mesh.scale.set(w * lerp(1, 2.2, cp), h * lerp(1, 2.2, cp), 1)
@@ -583,6 +785,7 @@ export default function useThreeStage (active, game) {
       reconcileEnemies(t, dt)
       reconcileBolts()
       reconcilePowerUps(t)
+      updateParticles(dt)
     }
     renderer.render(scene, camera)
     rafId = requestAnimationFrame(tick)
@@ -628,9 +831,13 @@ export default function useThreeStage (active, game) {
     boltTextures.alien = makeBoltTexture(BOLT_STYLES.alien.rgb, BOLT_STYLES.alien.glow)
     boltTextures.laser = makeBoltTexture(BOLT_STYLES.laser.rgb, BOLT_STYLES.laser.glow)
 
+    scratchColor = new THREE.Color()
+    prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+
     buildStarfield()
     buildShip()
     buildAlly()
+    buildParticles()
 
     sizeToContainer()
     resizeObserver = new ResizeObserver(sizeToContainer)
@@ -665,6 +872,13 @@ export default function useThreeStage (active, game) {
     if (shipGroup) shipGroup.children.forEach((c) => c.material.dispose())
     bgMesh = starsMesh = twinkleMesh = shipGroup = shipBody = null
     shipHitGlow = shipShieldGlow = allyGroup = allyBody = beamMesh = null
+
+    if (particleGeom) particleGeom.dispose()
+    if (particleMat) particleMat.dispose()
+    particlePoints = particleGeom = particleMat = null
+    scratchColor = null
+    pCursor = 0
+    lastShipX = lastShipY = null
 
     if (unitGeometry) unitGeometry.dispose()
     for (const tex of [shipTexture, ufoTexture, enterpriseTexture, starsTexture, twinkleTexture, beamTexture, glowTexture]) {
