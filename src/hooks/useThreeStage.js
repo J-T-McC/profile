@@ -7,7 +7,7 @@ import enterpriseUrl from '@/assets/enterprise.svg'
 // ally, phaser beam, power-ups - plus the scrolling starfield, and reproduces the
 // game-feel effects that used to be CSS keyframes (hit/shield flashes, UFO kill
 // pulse, ally warp-in/out, phaser zap fade, power-up collect pop). Reads the game's
-// reactive state (useSpaceGame) each frame. Remaining DOM in History.vue: HUD,
+// reactive state (useSpaceGame) each frame. Remaining DOM in SpaceGame.vue: HUD,
 // radar, UFO health bars, the warp-flash and ship-explosion bursts, arcade modals.
 //
 // World space matches the game logic: container pixels, origin top-left, +y down.

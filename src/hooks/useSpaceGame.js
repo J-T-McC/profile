@@ -138,7 +138,7 @@ const STORE = {
 }
 
 // Projectile owner + lifecycle-state values, and power-up lifecycle-state values. Exported
-// because History.vue's template compares against them too (and SvgWeapon derives its CSS
+// because SpaceGame.vue's template compares against them too (and SvgWeapon derives its CSS
 // class names from owner/state), so both sides share one definition.
 export const OWNER = {
   PLAYER: 'player',
@@ -158,7 +158,7 @@ export const POWERUP_STATE = {
 }
 
 // Overall run state: PLAYING, PROMPT (ship destroyed with lives left - continue/restart)
-// and GAME_OVER (all lives spent). Exported so History.vue's overlays can compare against it.
+// and GAME_OVER (all lives spent). Exported so SpaceGame.vue's overlays can compare against it.
 export const GAME_STATE = {
   PLAYING: 'playing',
   PROMPT: 'prompt',
