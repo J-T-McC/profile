@@ -49,6 +49,7 @@ const RENDER_ORDER = {
   bg: -11,
   stars: -10,
   twinkle: -9,
+  asteroid: -8, // drifting 3D rocks, in front of the starfield but behind all gameplay
   healthTrack: 15, // above every UFO (their zIndex is 1 or 12)
   healthFill: 16,
   ally: 17,
@@ -68,6 +69,12 @@ const PARTICLE_MAX = 700
 
 // Screen-shake decay (per second) - how fast the camera offset settles back to centre.
 const SHAKE_DECAY = 9
+
+// Drifting 3D asteroids - low-poly lit rocks that cross the field behind the gameplay for
+// a sense of depth. Nearer (bigger) ones drift faster; all tumble on a random axis.
+const ASTEROID_COUNT = 6
+const ASTEROID_MIN_SIZE = 16 // px radius
+const ASTEROID_MAX_SIZE = 62
 
 // Selective bloom: only objects put on BLOOM_LAYER (the additive energy effects - bolts,
 // beam, ship glows, particles) glow. Everything else (ship/UFO/ally sprites, the star
@@ -167,6 +174,11 @@ export default function useThreeStage (active, game) {
   // decays it. lastShipHit tracks the rising edge of the ship's hit flash.
   let shakeMag = 0
   let lastShipHit = false
+
+  // Drifting 3D asteroids (each { mesh, vx, vy, spin }) plus their lights.
+  let asteroids = []
+  let asteroidAmbient = null
+  let asteroidLight = null
 
   // World (container px, +y down) -> scene (same units, +y up).
   const toScene = (x, y) => [x, viewHeight - y]
@@ -384,6 +396,73 @@ export default function useThreeStage (active, game) {
     scene.add(beamMesh)
   }
 
+  // A lumpy low-poly rock: displace an icosahedron's vertices along their radius. Flat
+  // shading (on the material) gives the faceted asteroid look.
+  const makeAsteroidGeometry = () => {
+    const geo = new THREE.IcosahedronGeometry(1, 1)
+    const pos = geo.attributes.position
+    const v = new THREE.Vector3()
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).multiplyScalar(0.75 + Math.random() * 0.5)
+      pos.setXYZ(i, v.x, v.y, v.z)
+    }
+    geo.computeVertexNormals()
+    return geo
+  }
+
+  // (Re)seed one asteroid: pick a size (=> depth), speed, spin and entry position. When
+  // initial, spread it anywhere across the field; otherwise start it just off the edge it
+  // enters from. Positions are plain scene coords (+y up) - purely decorative, no game math.
+  const resetAsteroid = (a, initial) => {
+    const dir = Math.random() < 0.5 ? 1 : -1
+    const sizePx = ASTEROID_MIN_SIZE + Math.random() * (ASTEROID_MAX_SIZE - ASTEROID_MIN_SIZE)
+    const depth = (sizePx - ASTEROID_MIN_SIZE) / (ASTEROID_MAX_SIZE - ASTEROID_MIN_SIZE) // 0 far .. 1 near
+    a.mesh.scale.setScalar(sizePx)
+
+    // Dim/cool the far ones for aerial-perspective depth.
+    const shade = 0.28 + depth * 0.5
+    a.mesh.material.color.setRGB(shade * 0.62, shade * 0.55, shade * 0.5)
+
+    const speed = (12 + Math.random() * 20) * (0.5 + depth) // px/s, nearer = faster
+    a.vx = dir * speed
+    a.vy = (Math.random() * 2 - 1) * speed * 0.3
+
+    const margin = sizePx + 24
+    a.mesh.position.set(
+      initial ? Math.random() * viewWidth : (dir > 0 ? -margin : viewWidth + margin),
+      Math.random() * viewHeight,
+      0
+    )
+    a.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI)
+    a.spinX = (Math.random() * 2 - 1) * 0.6
+    a.spinY = (Math.random() * 2 - 1) * 0.6
+    a.spinZ = (Math.random() * 2 - 1) * 0.6
+  }
+
+  const buildAsteroids = () => {
+    // Lights only touch the (lit) asteroid material; every other object uses MeshBasicMaterial
+    // and ignores them.
+    asteroidAmbient = new THREE.AmbientLight(0x8899bb, 0.9)
+    asteroidLight = new THREE.DirectionalLight(0xffffff, 2.2)
+    asteroidLight.position.set(-0.4, 0.7, 1)
+    scene.add(asteroidAmbient, asteroidLight)
+
+    for (let i = 0; i < ASTEROID_COUNT; i++) {
+      const mesh = new THREE.Mesh(
+        makeAsteroidGeometry(),
+        // transparent:true so it sorts with the rest of the scene by renderOrder (the black
+        // background quad is itself a transparent mesh); depth test/write on for correct
+        // self-occlusion as it tumbles.
+        new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0, flatShading: true, transparent: true })
+      )
+      mesh.renderOrder = RENDER_ORDER.asteroid
+      scene.add(mesh)
+      const a = { mesh, vx: 0, vy: 0, spinX: 0, spinY: 0, spinZ: 0 }
+      resetAsteroid(a, true)
+      asteroids.push(a)
+    }
+  }
+
   // A UFO plus its health bar (dark track + coloured fill quads).
   const makeEnemy = () => {
     const body = new THREE.Mesh(unitGeometry, basicMat({ map: ufoTexture }))
@@ -550,6 +629,24 @@ export default function useThreeStage (active, game) {
       (t * TWINKLE_VX) / twinkleTexture.image.width,
       (t * TWINKLE_VY) / twinkleTexture.image.height
     )
+  }
+
+  const updateAsteroids = (dt) => {
+    if (prefersReducedMotion) return // leave them as a static field
+    for (const a of asteroids) {
+      a.mesh.position.x += a.vx * dt
+      a.mesh.position.y += a.vy * dt
+      a.mesh.rotation.x += a.spinX * dt
+      a.mesh.rotation.y += a.spinY * dt
+      a.mesh.rotation.z += a.spinZ * dt
+      // Recycle once fully off the edge it's heading toward (or drifted well off top/bottom).
+      const s = a.mesh.scale.x + 24
+      const p = a.mesh.position
+      if ((a.vx > 0 && p.x > viewWidth + s) || (a.vx < 0 && p.x < -s) ||
+          p.y < -s || p.y > viewHeight + s) {
+        resetAsteroid(a, false)
+      }
+    }
   }
 
   const updateShip = (t) => {
@@ -832,6 +929,7 @@ export default function useThreeStage (active, game) {
     prevTime = time
     if (game) {
       updateStarfield(t)
+      updateAsteroids(dt)
       updateShip(t)
       updateAlly(t)
       reconcileEnemies(t, dt)
@@ -936,8 +1034,11 @@ export default function useThreeStage (active, game) {
 
     renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true })
     scene = new THREE.Scene()
-    camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 10)
-    camera.position.z = 5
+    // Deep clip range + far camera so the 3D asteroids' z-extent fits. Orthographic scale
+    // is set by the frustum box (left/right/top/bottom), not camera distance, so pushing
+    // the camera back doesn't change how anything looks - flat sprites at z=0 are unaffected.
+    camera = new THREE.OrthographicCamera(0, 1, 1, 0, 0.1, 2000)
+    camera.position.z = 1000
 
     unitGeometry = new THREE.PlaneGeometry(1, 1)
 
@@ -970,6 +1071,7 @@ export default function useThreeStage (active, game) {
     buildShip()
     buildAlly()
     buildParticles()
+    buildAsteroids()
 
     await buildComposer(canvas)
     if (!renderer || stageCanvas.value !== canvas) return
@@ -1007,6 +1109,17 @@ export default function useThreeStage (active, game) {
     if (shipGroup) shipGroup.children.forEach((c) => c.material.dispose())
     bgMesh = starsMesh = twinkleMesh = shipGroup = shipBody = null
     shipHitGlow = shipShieldGlow = allyGroup = allyBody = beamMesh = null
+
+    for (const a of asteroids) {
+      scene?.remove(a.mesh)
+      a.mesh.geometry.dispose()
+      a.mesh.material.dispose()
+    }
+    asteroids = []
+    if (asteroidAmbient) scene?.remove(asteroidAmbient)
+    if (asteroidLight) scene?.remove(asteroidLight)
+    asteroidLight?.dispose?.()
+    asteroidAmbient = asteroidLight = null
 
     if (particleGeom) particleGeom.dispose()
     if (particleMat) particleMat.dispose()

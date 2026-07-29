@@ -59,20 +59,24 @@ Still open:
 
 _Effort: S–M. Impact: high. Cohesive glow across the whole scene._
 
-## 3. Asteroids flying through
+## 3. Asteroids flying through  ← DONE (cosmetic)
 
 The requested one. A small pool of **real 3D rocks** drifting across the field sells depth
-even in the ortho scene.
+even in the ortho scene. This is the first true 3D geometry + lighting in the renderer.
 
-- Low-poly `IcosahedronGeometry` with a displaced/noisy vertex pass, `MeshStandardMaterial`
-  + one directional light (needs lit materials, so this introduces the first non-`Basic`
-  material — or fake it with a baked normal-ish `CanvasTexture` on a Basic mat to avoid
-  lighting setup).
-- **Instanced** (`InstancedMesh`) so dozens are one draw call; each with its own tumble
-  (per-frame quaternion spin) and cross-screen velocity.
-- Spawn off one edge, drift to the other, recycle. Parallax by size + speed to imply depth.
-- Gameplay hooks (optional): collide with bolts to shatter (particles!), or damage the ship
-  on contact. Or purely cosmetic background traffic — cheaper and still great.
+Shipped:
+- Low-poly `IcosahedronGeometry` with a displaced-vertex pass + `flatShading`, lit by one
+  `DirectionalLight` + `AmbientLight` (only the asteroid `MeshStandardMaterial` is lit;
+  every other object is `MeshBasicMaterial` and ignores the lights).
+- A pool of individual meshes; each spawns off an edge, drifts across, tumbles on a random
+  axis, and recycles. Size drives parallax (nearer = bigger, faster, brighter). Rendered
+  behind all gameplay; reduced-motion leaves them static.
+- Camera clip range widened + camera pushed back so the rocks' z-extent fits (ortho scale
+  is unchanged by distance, so flat sprites are unaffected).
+
+Still open:
+- [ ] Instanced version if we ever want dozens.
+- [ ] Gameplay hooks: collide with bolts to shatter (particles!), or damage the ship.
 
 _Effort: M (cosmetic) / L (collidable). Impact: high — first true 3D geometry._
 
