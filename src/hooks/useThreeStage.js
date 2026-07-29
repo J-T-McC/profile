@@ -56,7 +56,6 @@ const RENDER_ORDER = {
   powerUp: 19,
   bolt: 20,
   shipGlow: 23,
-  shipBack: 24,
   ship: 25,
 } // enemies use their own zIndex (1 or 12)
 
@@ -297,11 +296,9 @@ export default function useThreeStage (active, game) {
     shipShieldGlow = makeGlowMesh(SHIP_SHIELD_COLOR, RENDER_ORDER.shipGlow)
 
     shipGroup = new THREE.Group()
-    const back = new THREE.Mesh(unitGeometry, basicMat({ color: 0xffffff }))
-    back.renderOrder = RENDER_ORDER.shipBack
     shipBody = new THREE.Mesh(unitGeometry, basicMat({ map: shipTexture }))
     shipBody.renderOrder = RENDER_ORDER.ship
-    shipGroup.add(back, shipBody)
+    shipGroup.add(shipBody)
     shipGroup.visible = false
     scene.add(shipGroup)
   }
@@ -365,7 +362,7 @@ export default function useThreeStage (active, game) {
     shipShieldGlow.visible = s.visible && s.shielded
     if (!s.visible) return
 
-    const [cx, cy] = toScene(s.x + SHIP_SIZE / 2, s.y + SHIP_SIZE / 2)
+    const [cx, cy] = toScene(s.x, s.y) // s.x/s.y is the ship centre
     shipGroup.position.set(cx, cy, 0)
     // CSS rotate() is clockwise in screen space; scene +y is up, so negate.
     shipGroup.rotation.z = -THREE.MathUtils.degToRad(s.angle)

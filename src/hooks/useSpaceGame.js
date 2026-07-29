@@ -310,7 +310,8 @@ export default function useSpaceGame (isActive) {
 
   // Numeric ship position/target driving the per-frame movement loop. World space:
   // container pixels, origin at the container's top-left, +x right, +y down (see
-  // pointerToWorld). Everything - ship, enemies, projectiles, pointer - lives here.
+  // pointerToWorld). shipX/shipY is the ship's CENTRE - so it moves to, fires from, and
+  // aims around the middle. Everything - ship, enemies, projectiles, pointer - lives here.
   let shipX = 0
   let shipY = 0
   let shipTargetX = 0
@@ -656,12 +657,8 @@ export default function useSpaceGame (isActive) {
     lastPointerX = pointer.x
     lastPointerY = pointer.y
 
-    // Aim from the ship's JS-tracked position - no DOM measurement. shipX/shipY is
-    // the ship's top-left; adding SHIP_SIZE reproduces the original pivot corner.
-    const centerX = shipX + SHIP_SIZE
-    const centerY = shipY + SHIP_SIZE
-
-    const radians = Math.atan2(pointer.x - centerX, pointer.y - centerY)
+    // Aim from the ship's centre (shipX/shipY) - no DOM measurement.
+    const radians = Math.atan2(pointer.x - shipX, pointer.y - shipY)
     const degree = (radians * (180 / Math.PI) * -1) + 180
 
     shipAngle.value = degree
@@ -694,20 +691,19 @@ export default function useSpaceGame (isActive) {
     shipStretch = WARP_STRETCH
   }
 
-  // The player's own ship hit circle, computed straight from its JS-tracked position and
-  // fixed size - no DOM read. shipX/shipY is the ship's top-left, so its centre is offset
-  // by half of SHIP_SIZE. A constant radius also gives a steadier hitbox than the old
-  // transformed-bounding-box read, which grew and shrank as the ship rotated.
+  // The player's own ship hit circle, straight from its JS-tracked centre and fixed size -
+  // no DOM read. A constant radius gives a steadier hitbox than the old transformed-
+  // bounding-box read, which grew and shrank as the ship rotated.
   const getShipHitCircle = () => ({
-    x: shipX + SHIP_SIZE / 2,
-    y: shipY + SHIP_SIZE / 2,
+    x: shipX,
+    y: shipY,
     radius: SHIP_SIZE / 2 + PROJECTILE_HIT_PADDING,
   })
 
   // Snapshot of the ship's render state for the Three.js renderer, which polls it
   // once per frame. A plain getter (rather than exposing refs) keeps the hot-path
-  // shipX/shipY/shipStretch as module-local lets. Position is the ship's top-left
-  // (matching the old CSS top/left); angle is degrees, stretch is the warp factor.
+  // shipX/shipY/shipStretch as module-local lets. Position is the ship's centre;
+  // angle is degrees, stretch is the warp factor.
   const getShipRenderState = () => ({
     x: shipX,
     y: shipY,
@@ -802,8 +798,8 @@ export default function useSpaceGame (isActive) {
     if (gameState.value !== GAME_STATE.PLAYING || shipExplosion.active) return
 
     playDestroyedSound()
-    shipExplosion.x = shipX + 20 // ship is 40px; centre the burst on it
-    shipExplosion.y = shipY + 20
+    shipExplosion.x = shipX // shipX/shipY is already the ship's centre
+    shipExplosion.y = shipY
     shipExplosion.active = true
     lives.value = Math.max(0, lives.value - 1)
 
@@ -1528,10 +1524,10 @@ export default function useSpaceGame (isActive) {
     gameState.value = GAME_STATE.PLAYING
     shipExplosion.active = false
 
-    shipX = 0
-    shipY = 0
-    shipTargetX = 0
-    shipTargetY = 0
+    shipX = SHIP_SIZE / 2
+    shipY = SHIP_SIZE / 2
+    shipTargetX = SHIP_SIZE / 2
+    shipTargetY = SHIP_SIZE / 2
     shipStretch = 1
     shipAngle.value = 0
     hasFacing = false
