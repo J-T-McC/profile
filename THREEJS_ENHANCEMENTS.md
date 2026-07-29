@@ -107,14 +107,16 @@ texture memory, and a knob-per-parameter for theming.
 
 _Effort: M. Impact: medium-high. Great ambience._
 
-## 7. Camera feel — juice
+## 7. Camera feel — juice  ← STARTED
 
 Small motions that make hits land harder. All live in `tick`/`updateShip`, no new deps.
 
-- **Screen shake** on ship hit, UFO kill, and warp — decaying random camera offset.
-- **Hit-stop** — a couple-frame time scale dip on big impacts.
-- **Zoom punch** — quick ortho-frustum scale on level-up or ship death.
-- **Parallax pan** — nudge the camera a few px toward the pointer/ship.
+- [x] **Screen shake** on ship hit and UFO kill — decaying random camera offset (kill shake
+  scales with UFO size; background layers overscanned so the offset can't reveal an edge;
+  reduced-motion aware).
+- [ ] **Hit-stop** — a couple-frame time scale dip on big impacts.
+- [ ] **Zoom punch** — quick ortho-frustum scale on level-up or ship death.
+- [ ] **Parallax pan** — nudge the camera a few px toward the pointer/ship.
 
 _Effort: S. Impact: medium-high. Cheap polish._
 
@@ -144,11 +146,11 @@ If we want one high-impact, low-risk PR to prove the direction:
 1. ~~**Bloom pass** (§2)~~ — DONE: EffectComposer + UnrealBloomPass, lazy-imported.
 2. ~~**Reusable particle pool** (§1)~~ — DONE: pool built, with thruster trail, UFO debris
    and collect sparkle wired in. Muzzle flash / impact sparks still to add.
-3. **Screen shake** (§7) on hits/kills.  ← next
+3. ~~**Screen shake** (§7)~~ — DONE: decaying camera offset on ship hit / UFO kill.
 
-That trio is all additive, stays orthographic, needs no coordinate-bridge work, and
+That trio (all done) is additive, stays orthographic, needs no coordinate-bridge work, and
 transforms the feel. Asteroids (§3) and the perspective layer (§4) make a natural second PR
-once the particle/bloom infrastructure exists.
+now that the particle/bloom infrastructure exists.
 
 ## Guardrails
 

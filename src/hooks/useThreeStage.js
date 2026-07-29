@@ -66,6 +66,9 @@ const HEALTH_BAR_HEIGHT = 5 // px, matches the old .ufo-health-track
 // burst/trail effect; PARTICLE_MAX caps the live count.
 const PARTICLE_MAX = 700
 
+// Screen-shake decay (per second) - how fast the camera offset settles back to centre.
+const SHAKE_DECAY = 9
+
 // Bloom (UnrealBloomPass). Threshold is high so only the bright, additive pieces (bolts,
 // glows, beam, particles, the white star field) blow out into neon - the mid-tone ship
 // and UFO sprites barely bloom.
@@ -156,6 +159,11 @@ export default function useThreeStage (active, game) {
   let prefersReducedMotion = false
   let lastShipX = null
   let lastShipY = null
+
+  // Screen shake: a decaying random camera offset. Events bump shakeMag; tick applies and
+  // decays it. lastShipHit tracks the rising edge of the ship's hit flash.
+  let shakeMag = 0
+  let lastShipHit = false
 
   // World (container px, +y down) -> scene (same units, +y up).
   const toScene = (x, y) => [x, viewHeight - y]
@@ -266,13 +274,18 @@ export default function useThreeStage (active, game) {
 
   // --- Sizing ----------------------------------------------------------------
 
+  // Oversize the background layers a touch so a screen-shake camera offset never exposes a
+  // gap at the viewport edge.
+  const BG_OVERSCAN = 24
   const fitBackgroundQuad = (mesh, texture) => {
     if (!mesh) return
+    const w = viewWidth + BG_OVERSCAN * 2
+    const h = viewHeight + BG_OVERSCAN * 2
     mesh.position.set(viewWidth / 2, viewHeight / 2, 0)
-    mesh.scale.set(viewWidth, viewHeight, 1)
+    mesh.scale.set(w, h, 1)
     const img = texture?.image
     if (img && img.width) {
-      texture.repeat.set(viewWidth / img.width, viewHeight / img.height)
+      texture.repeat.set(w / img.width, h / img.height)
     }
   }
 
@@ -485,6 +498,12 @@ export default function useThreeStage (active, game) {
     }
   }
 
+  // Bump the shake to at least `amount` (world px). Kicks don't stack past the strongest.
+  const addShake = (amount) => {
+    if (prefersReducedMotion) return
+    if (amount > shakeMag) shakeMag = amount
+  }
+
   const updateParticles = (dt) => {
     if (!particlePoints) return
     let any = false
@@ -525,6 +544,11 @@ export default function useThreeStage (active, game) {
     shipGroup.visible = s.visible
     shipHitGlow.visible = s.visible && s.hit
     shipShieldGlow.visible = s.visible && s.shielded
+
+    // Jolt on the rising edge of the ship's hit flash.
+    if (s.visible && s.hit && !lastShipHit) addShake(10)
+    lastShipHit = s.visible && s.hit
+
     if (!s.visible) {
       lastShipX = lastShipY = null
       return
@@ -650,6 +674,7 @@ export default function useThreeStage (active, game) {
             life: 0.7, lifeVar: 0.5,
             size0: Math.max(6, dsize * 0.25), size1: 1, drag: 3.2,
           })
+          addShake(4 + dsize * 0.12) // bigger/closer UFOs hit harder
         }
       } else {
         body.userData.debrisDone = false
@@ -801,6 +826,17 @@ export default function useThreeStage (active, game) {
       reconcilePowerUps(t)
       updateParticles(dt)
     }
+
+    // Apply + decay the screen shake as a random camera offset (world px).
+    if (shakeMag > 0.05) {
+      camera.position.x = (Math.random() * 2 - 1) * shakeMag
+      camera.position.y = (Math.random() * 2 - 1) * shakeMag
+      shakeMag *= Math.exp(-SHAKE_DECAY * dt)
+    } else if (camera.position.x !== 0 || camera.position.y !== 0) {
+      shakeMag = 0
+      camera.position.x = camera.position.y = 0
+    }
+
     if (composer) composer.render()
     else renderer.render(scene, camera)
     rafId = requestAnimationFrame(tick)
@@ -926,6 +962,8 @@ export default function useThreeStage (active, game) {
     scratchColor = null
     pCursor = 0
     lastShipX = lastShipY = null
+    shakeMag = 0
+    lastShipHit = false
 
     if (unitGeometry) unitGeometry.dispose()
     for (const tex of [shipTexture, ufoTexture, enterpriseTexture, starsTexture, twinkleTexture, beamTexture, glowTexture]) {
