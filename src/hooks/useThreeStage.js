@@ -35,8 +35,8 @@ const NEBULA_SPEED = 0.015 // how fast the clouds churn
 
 // A planet occasionally drifts across the far background (in the perspective bg scene).
 const PLANET_DEPTH = 200 // world units in front of the bg camera
-const PLANET_MIN_RADIUS = 13
-const PLANET_MAX_RADIUS = 26
+const PLANET_MIN_RADIUS = 18
+const PLANET_MAX_RADIUS = 36
 const PLANET_SPEED = 7 // world units/s - a very slow crossing
 const PLANET_GAP_MIN = 18 // s hidden between crossings
 const PLANET_GAP_MAX = 45
