@@ -234,18 +234,42 @@ export default function useThreeStage (active, game) {
 
   // --- Texture factories -----------------------------------------------------
 
+  // A comet-shaped tracer: a bright round head at the right (+x = direction of travel) with
+  // a tapering, fading tail toward the left. The mesh is oriented + offset in reconcileBolts
+  // so the head sits at the projectile's leading point.
   const makeBoltTexture = (rgb, glow) => {
-    const size = 64
+    const w = 128
+    const h = 40
+    const r = h / 2
+    const headX = w - r // head centre near the right edge
     const canvas = document.createElement('canvas')
-    canvas.width = canvas.height = size
+    canvas.width = w
+    canvas.height = h
     const ctx = canvas.getContext('2d')
-    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
-    g.addColorStop(0.0, 'rgba(255,255,255,1)')
-    g.addColorStop(0.25, `rgba(${rgb},1)`)
-    g.addColorStop(0.6, `rgba(${glow},0.5)`)
-    g.addColorStop(1.0, `rgba(${glow},0)`)
-    ctx.fillStyle = g
-    ctx.fillRect(0, 0, size, size)
+
+    // Tail: a triangle from the head width down to a point at the far (left) tail, filled
+    // with a gradient that fades to transparent toward the tail.
+    const tail = ctx.createLinearGradient(0, 0, w, 0)
+    tail.addColorStop(0.0, `rgba(${glow},0)`)
+    tail.addColorStop(0.7, `rgba(${glow},0.3)`)
+    tail.addColorStop(1.0, `rgba(${glow},0.75)`)
+    ctx.fillStyle = tail
+    ctx.beginPath()
+    ctx.moveTo(0, h / 2)
+    ctx.lineTo(headX, 1)
+    ctx.lineTo(headX, h - 1)
+    ctx.closePath()
+    ctx.fill()
+
+    // Head: a bright white-hot core fading through the bolt colour.
+    const head = ctx.createRadialGradient(headX, h / 2, 0, headX, h / 2, r)
+    head.addColorStop(0.0, 'rgba(255,255,255,1)')
+    head.addColorStop(0.35, `rgba(${rgb},1)`)
+    head.addColorStop(0.7, `rgba(${glow},0.6)`)
+    head.addColorStop(1.0, `rgba(${glow},0)`)
+    ctx.fillStyle = head
+    ctx.fillRect(headX - r, 0, r * 2, h)
+
     const tex = new THREE.CanvasTexture(canvas)
     tex.colorSpace = THREE.SRGBColorSpace
     return tex
@@ -1373,12 +1397,14 @@ export default function useThreeStage (active, game) {
       }
       const core = BOLT_STYLES[kind].core
       const width = core * 2
-      // Tracer: stretch the glow into a streak along the direction of travel, scaled by
-      // speed (faster shots = longer streaks). The radial glow reads as a rounded lozenge.
+      // Comet tracer: length scales with speed (capped). The head (+x of the texture) sits at
+      // the projectile's leading point and the tail trails behind along -velocity.
       const speed = Math.hypot(p.vx, p.vy)
       const len = Math.min(Math.max(speed * BOLT_STREAK_SCALE, width), width * 4)
-      mesh.position.set(...toScene(p.x + core / 2, p.y + core / 2), 0)
-      mesh.rotation.z = speed > 0.001 ? Math.atan2(-p.vy, p.vx) : 0 // scene +y is up, so flip vy
+      const angle = speed > 0.001 ? Math.atan2(-p.vy, p.vx) : 0 // scene +y is up, so flip vy
+      const [hx, hy] = toScene(p.x + core / 2, p.y + core / 2)
+      mesh.position.set(hx - Math.cos(angle) * len * 0.5, hy - Math.sin(angle) * len * 0.5, 0)
+      mesh.rotation.z = angle
       mesh.scale.set(len, width, 1)
     }
     for (const [id, mesh] of boltMeshes) {
