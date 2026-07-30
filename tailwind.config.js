@@ -1,8 +1,11 @@
 module.exports = {
     darkMode: 'class',
     purge: {
-        preserveHtmlElements: false,
+        // Keep Preflight's base element styles (html font-family, resets, etc.). With
+        // preserveHtmlElements:false, Tailwind 2.2's purge stripped the `html { font-family }`
+        // rule, which is why the site font regressed after the Vite move.
         content: [
+            './index.html',
             './public/*.html',
             './src/**/*.vue',
         ],

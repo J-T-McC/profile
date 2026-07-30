@@ -1,9 +1,19 @@
 import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import useLocalStore from '@/hooks/useLocalStore'
+import shipPhaserUrl from '@/assets/sounds/shipphaser.wav'
 
 const UFO_MAX_SIZE = 75
+const UFO_MIN_SIZE = 38 // ~50% of max - floor so the depth illusion doesn't shrink it to a speck
 const SHIP_FOLLOW_RATE = 12         // 1/s - how fast the ship closes the gap to its target (higher = snappier)
 const ARRIVE_THRESHOLD = 0.5        // px - snap to target once this close, instead of easing forever
+
+// Arrow-key flight: thrust builds velocity, which decays (glide) when the keys release.
+const SHIP_ACCEL = 2600             // px/s^2 - thrust acceleration
+const SHIP_MAX_SPEED = 620          // px/s - top fly speed
+const SHIP_THRUST_FRICTION = 1.5    // 1/s - light velocity decay while thrusting
+const SHIP_COAST_FRICTION = 4       // 1/s - stronger decay when coasting, for a short glide to a stop
+const SHIP_COAST_STOP = 8           // px/s - below this the ship counts as stopped (click-warp can resume)
+const ARROW_DIRS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }
 const PROJECTILE_SPEED = 900        // px/s
 const PROJECTILE_MAX_DISTANCE = 1200 // px travelled before a shot is considered a miss
 const PROJECTILE_HIT_PADDING = 10   // px of extra forgiveness added to the UFO's on-screen radius
@@ -15,7 +25,7 @@ const HIT_ANIM_DURATION = 260       // how long a projectile's "hit" burst plays
 const MISS_ANIM_DURATION = 160      // how long a projectile's fade-out plays before removal
 
 const WARP_STRETCH = 1.7            // peak squash-and-stretch factor when a "fly here" click lands
-const WARP_SETTLE_DURATION = 300    // ms for the stretch to ease back to normal
+const WARP_SETTLE_RATE = 10         // exp-decay rate for the warp stretch to settle back (~300ms)
 const WARP_FLASH_FADE_DURATION = 380 // ms for the departure-point light burst to fade out
 
 const UFO_MAX_HEALTH = 10           // hits to destroy the UFO and advance a level
@@ -24,6 +34,11 @@ const UFO_RESPAWN_DELAY = 2500      // ms the UFO stays gone after being destroy
 const KILL_BONUS_SCORE = 5          // extra points awarded on top of the +1 for the killing hit
 const LEVEL_DIFFICULTY_CAP = 10     // level at which reaction-time difficulty maxes out
 const ENEMY_WANDER_INTERVAL = 10000 // ms - max idle interval before an enemy drifts to a new spot
+const ENEMY_WANDER_STEP = 200       // px - idle wander drifts to a spot within this of the current one
+const ENEMY_WANDER_FOLLOW_RATE = 1.1 // 1/s - gentle glide for idle drift (before the level multiplier)
+const ENEMY_DODGE_DISTANCE = 150    // px - how far the cube slips when dodging the cursor
+const ENEMY_DODGE_SIDESTEP = 0.55   // 0..1 - blend toward a perpendicular sidestep so dodges curve
+const ENEMY_DODGE_FOLLOW_RATE = 2.4 // 1/s - quicker but still smooth evasive glide (before the multiplier)
 const LEVELS_PER_NEW_ENEMY = 10     // an additional enemy UFO joins the field every this many levels
 
 // "Reaction time" difficulty knobs - how alert/agile the UFO is, scaled by level from an
@@ -35,7 +50,7 @@ const FLEE_COOLDOWN_MIN = 250       // ms - reaction time floor at high levels
 const FLEE_RADIUS_START = 35        // px - level 1: cursor has to get quite close to spook it
 const FLEE_RADIUS_MAX = 130         // px - detection range ceiling at high levels
 const UFO_SPEED_MULTIPLIER_START = 0.35 // level 1: dodges away sluggishly
-const UFO_SPEED_MULTIPLIER_MAX = 1.6    // dodge speed ceiling at high levels
+const UFO_SPEED_MULTIPLIER_MAX = 1.2    // dodge speed ceiling at high levels
 
 // The UFO's return fire - unlocked at ALIEN_FIRE_MIN_LEVEL. There's no player health, so
 // getting hit instead heals the UFO by 1 - fires rarely right when it unlocks, and more
@@ -63,6 +78,7 @@ const POWERUP_LIFESPAN = 12000       // ms a spawned pickup floats around before
 const POWERUP_SPAWN_INTERVAL_MIN = 14000
 const POWERUP_SPAWN_INTERVAL_MAX = 24000
 const POWERUP_DRIFT_SPEED = 70       // px/s, horizontal drift across the screen
+const ASTEROID_DROP_CHANCE = 0.18    // chance a shattered asteroid drops a power-up
 const POWERUP_BOB_AMPLITUDE = 10     // px of vertical bobbing while it floats
 const POWERUP_BOB_FREQUENCY = 0.6    // bobs per second
 const POWERUP_COLLECT_PADDING = 16   // px of extra forgiveness added to the ship's radius for pickup
@@ -93,17 +109,19 @@ const LOW_HEALTH_DEFENSIVE_WEIGHT_BONUS = 8
 
 // Temporary AI ally (a Star Trek-style starship) - warps in on pickup, patrols the field
 // and auto-fires homing phasers at the nearest enemy for its duration, then warps out.
-const ALLY_MIN_LEVEL = 6
+const ALLY_MIN_LEVEL = 5
 const ALLY_DURATION = 12000         // base ms the ally fights before warping out (level-scaled)
 const ALLY_WARP_IN_DURATION = 700   // ms - must match the ally-warp-in CSS animation
 const ALLY_WARP_OUT_DURATION = 700  // ms - must match the ally-warp-out CSS animation
 const ALLY_SIZE = 64                // px width of the starship sprite (height is 1.2x)
+const SHIP_SIZE = 40                // px width/height of the player ship (Tailwind w-10 h-10)
 const ALLY_FOLLOW_RATE = 3          // 1/s - eased-follow rate as it chases its target
 const ALLY_ENGAGE_RANGE = 340       // px - the ally must be within this of an enemy to fire
 const ALLY_STANDOFF = 150           // px - preferred distance it holds from the enemy it's chasing
 const ALLY_FIRE_COOLDOWN = 700      // ms between phaser beams
 const ALLY_BEAM_DURATION = 220      // ms a fired phaser beam stays drawn (must match the CSS fade)
 const ALLY_PHASER_DAMAGE = 2        // each phaser beam hits hard, like the laser buff
+const PHASER_VOLUME = 0.2           // playback gain for the ship-phaser sample
 
 // Power-up categories - weapon buffs are mutually exclusive with each other, but stack
 // alongside a shield, health pickups and an ally (you can hold a laser AND a shield AND
@@ -122,20 +140,12 @@ const POWERUP_TYPES = {
   rapid3: { minLevel: 5, category: POWERUP_CATEGORY.WEAPON, label: '3×', color: '#818cf8', fireRateMultiplier: 3 },
   double: { minLevel: 5, category: POWERUP_CATEGORY.WEAPON, label: '2•', color: '#facc15', doubleShot: true },
   rapid4: { minLevel: 7, category: POWERUP_CATEGORY.WEAPON, label: '4×', color: '#f472b6', fireRateMultiplier: 4 },
-  laser: { minLevel: 8, category: POWERUP_CATEGORY.WEAPON, label: 'L', color: '#34d399', laser: true },
+  laser: { minLevel: 10, category: POWERUP_CATEGORY.WEAPON, label: 'L', color: '#34d399', laser: true },
   health: { minLevel: 4, category: POWERUP_CATEGORY.HEALTH, label: '♥', color: '#f87171', weight: 0.5, restore: HEALTH_ITEM_RESTORE },
   shield: { minLevel: 5, category: POWERUP_CATEGORY.SHIELD, label: '⛊', color: '#22d3ee', weight: 0.5, duration: SHIELD_BUFF_DURATION },
-  ally: { minLevel: ALLY_MIN_LEVEL, category: POWERUP_CATEGORY.ALLY, label: 'NCC', color: '#a5b4fc', weight: 0.4, duration: ALLY_DURATION },
+  ally: { minLevel: ALLY_MIN_LEVEL, category: POWERUP_CATEGORY.ALLY, label: 'NCC', color: '#a5b4fc', weight: 0.5, duration: ALLY_DURATION },
 }
 
-// CSS property names written into the reactive ship style object (shipPos). Defined once
-// here rather than retyping the literal at each assignment.
-const CSS = {
-  transitionProperty: 'transition-property',
-  transitionDuration: 'transition-duration',
-  animationDuration: 'animation-duration',
-  zIndex: 'z-index',
-}
 
 // localStorage keys (via useLocalStore).
 const STORE = {
@@ -145,7 +155,7 @@ const STORE = {
 }
 
 // Projectile owner + lifecycle-state values, and power-up lifecycle-state values. Exported
-// because History.vue's template compares against them too (and SvgWeapon derives its CSS
+// because SpaceGame.vue's template compares against them too (and SvgWeapon derives its CSS
 // class names from owner/state), so both sides share one definition.
 export const OWNER = {
   PLAYER: 'player',
@@ -165,7 +175,7 @@ export const POWERUP_STATE = {
 }
 
 // Overall run state: PLAYING, PROMPT (ship destroyed with lives left - continue/restart)
-// and GAME_OVER (all lives spent). Exported so History.vue's overlays can compare against it.
+// and GAME_OVER (all lives spent). Exported so SpaceGame.vue's overlays can compare against it.
 export const GAME_STATE = {
   PLAYING: 'playing',
   PROMPT: 'prompt',
@@ -174,7 +184,6 @@ export const GAME_STATE = {
 
 export default function useSpaceGame (isActive) {
   const container = ref(null)
-  const ship = ref(null)
 
   const score = ref(0)
   const bestScore = ref(0)
@@ -238,7 +247,6 @@ export default function useSpaceGame (isActive) {
 
   const warpFlashes = reactive([])
   let nextWarpFlashId = 0
-  let warpSettleTimeoutId = null
 
   const powerUps = reactive([])
   let nextPowerUpId = 0
@@ -316,22 +324,20 @@ export default function useSpaceGame (isActive) {
   const shipHit = ref(false) // brief flash when the alien's return fire connects
   let shipHitTimeoutId = null
 
-  // Rendered ship style - top/left are driven every animation frame by the numeric
-  // position below; only the rotation transform gets a CSS transition (for smoothing
-  // between the discrete mousemove samples that drive rotateShip).
-  const shipPos = reactive({
-    top: '0px',
-    left: '0px',
-    [CSS.transitionProperty]: 'transform',
-    [CSS.transitionDuration]: '0.1s',
-  })
 
-  // Numeric ship position/target driving the per-frame movement loop. Coordinate
-  // space matches the original code: x is viewport-relative, y is container-relative.
+  // Numeric ship position/target driving the per-frame movement loop. World space:
+  // container pixels, origin at the container's top-left, +x right, +y down (see
+  // pointerToWorld). shipX/shipY is the ship's CENTRE - so it moves to, fires from, and
+  // aims around the middle. Everything - ship, enemies, projectiles, pointer - lives here.
   let shipX = 0
   let shipY = 0
   let shipTargetX = 0
   let shipTargetY = 0
+
+  // Arrow-key flight velocity + which direction keys are currently held.
+  let shipVX = 0
+  let shipVY = 0
+  const heldKeys = { up: false, down: false, left: false, right: false }
 
   // Last known cursor position (same coordinate space as the ship/enemies), used so
   // enemies can continuously evade a lingering cursor rather than only reacting once.
@@ -400,12 +406,30 @@ export default function useSpaceGame (isActive) {
 
   let audioCtx = null
 
+  // The ally phaser is a real sample (the rest are synthesized). Decoded once into an
+  // AudioBuffer and played through a GainNode, so its volume is applied deterministically
+  // and isn't subject to Apple's block on HTMLMediaElement.volume. Callback-form decode is
+  // used because older Safari's decodeAudioData doesn't return a promise.
+  let phaserBuffer = null
+  let phaserLoading = false
+  const loadPhaserBuffer = (ctx) => {
+    if (phaserBuffer || phaserLoading) return
+    phaserLoading = true
+    fetch(shipPhaserUrl)
+      .then((r) => r.arrayBuffer())
+      .then((data) => new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject)))
+      .then((buf) => { phaserBuffer = buf })
+      .catch(() => {})
+      .finally(() => { phaserLoading = false })
+  }
+
   const getAudioContext = () => {
     if (muted.value) return null
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
     if (!AudioContextClass) return null
     if (!audioCtx) audioCtx = new AudioContextClass()
     if (audioCtx.state === 'suspended') audioCtx.resume()
+    loadPhaserBuffer(audioCtx) // no-op once cached / in flight
     return audioCtx
   }
 
@@ -546,17 +570,13 @@ export default function useSpaceGame (isActive) {
   // own softer laser and the enemy's coarse sawtooth.
   const playPhaserSound = () => {
     const ctx = getAudioContext()
-    if (!ctx) return
-    const osc = ctx.createOscillator()
+    if (!ctx || !phaserBuffer) return // sample decodes within ~1s of the first sound
+    const src = ctx.createBufferSource()
+    src.buffer = phaserBuffer
     const gain = ctx.createGain()
-    osc.type = 'sawtooth'
-    osc.frequency.setValueAtTime(1400, ctx.currentTime)
-    osc.frequency.exponentialRampToValueAtTime(520, ctx.currentTime + 0.14)
-    gain.gain.setValueAtTime(0.07, ctx.currentTime)
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
-    osc.connect(gain).connect(ctx.destination)
-    osc.start()
-    osc.stop(ctx.currentTime + 0.16)
+    gain.gain.value = PHASER_VOLUME
+    src.connect(gain).connect(ctx.destination)
+    src.start()
   }
 
   // A rising, shimmering whoosh for the ally warping in or out.
@@ -577,7 +597,7 @@ export default function useSpaceGame (isActive) {
   }
 
   // How many enemies should be on the field at a given level - one to start, plus one more
-  // every LEVELS_PER_NEW_ENEMY levels (so a new bad guy joins at level 10, 20, 30, ...).
+  // every LEVELS_PER_NEW_ENEMY levels (so a new bad guy joins at that level, 2x it, 3x it, ...).
   const enemyCountForLevel = (lvl) => 1 + Math.floor(lvl / LEVELS_PER_NEW_ENEMY)
 
   const createEnemy = () => ({
@@ -605,29 +625,60 @@ export default function useSpaceGame (isActive) {
 
   // Re-rolls an enemy's size (depth illusion), speed and next drift target. On the very
   // first placement it snaps straight there rather than gliding in from off-screen.
-  const randomizeEnemy = (enemy) => {
-    if (!container.value) return
+  // Re-rolls only the depth-illusion look (size/brightness/z) + the base follow pace, without
+  // moving the enemy. Used both by randomizeEnemy and by the occasional idle "breathing".
+  const rerollEnemyDepth = (enemy) => {
     const durationSeconds = Math.ceil(Math.random() * 3)
-    const offset = Math.random() < 0.5 ? -100 : 100
-
-    const size = Math.ceil(Math.random() * UFO_MAX_SIZE)
+    const size = Math.round(UFO_MIN_SIZE + Math.random() * (UFO_MAX_SIZE - UFO_MIN_SIZE))
     enemy.size = size
     enemy.brightness = Math.max(40, (size / UFO_MAX_SIZE) * 100)
     enemy.zIndex = size >= (UFO_MAX_SIZE * 0.8) ? 12 : 1
     enemy.transitionDuration = durationSeconds + 's'
-    // Match the old hop pace, scaled by the current level's "reaction time".
     enemy.followRate = (3 / durationSeconds) * getUfoSpeedMultiplier()
+  }
 
+  const randomizeEnemy = (enemy) => {
+    if (!container.value) return
+    rerollEnemyDepth(enemy)
+
+    const offset = Math.random() < 0.5 ? -100 : 100
     const containerWidth = container.value.offsetWidth
     const containerHeight = container.value.offsetHeight
-    enemy.targetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - size, 0))
-    enemy.targetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - size, 0))
+    enemy.targetY = clamp(Math.random() * containerHeight + offset, 0, Math.max(containerHeight - enemy.size, 0))
+    enemy.targetX = clamp(Math.random() * containerWidth + offset, 0, Math.max(containerWidth - enemy.size, 0))
 
     if (!enemy.placed) {
       enemy.x = enemy.targetX
       enemy.y = enemy.targetY
       enemy.placed = true
     }
+  }
+
+  // Idle drift: ease toward a spot near the current one (gentle, not a screen-wide hop).
+  const wanderNearby = (enemy, w, h) => {
+    enemy.targetX = clamp(enemy.x + (Math.random() * 2 - 1) * ENEMY_WANDER_STEP, 0, Math.max(w - enemy.size, 0))
+    enemy.targetY = clamp(enemy.y + (Math.random() * 2 - 1) * ENEMY_WANDER_STEP, 0, Math.max(h - enemy.size, 0))
+    enemy.followRate = ENEMY_WANDER_FOLLOW_RATE * getUfoSpeedMultiplier()
+  }
+
+  // Evade: slide a bounded distance away from the cursor, blended with a perpendicular
+  // sidestep (alternating sides) so the dodge curves rather than darting in a straight line.
+  const dodgeCursor = (enemy, w, h) => {
+    const cx = enemy.x + enemy.size / 2
+    const cy = enemy.y + enemy.size / 2
+    let ax = cx - lastPointerX
+    let ay = cy - lastPointerY
+    const len = Math.hypot(ax, ay) || 1
+    ax /= len; ay /= len
+    const side = Math.random() < 0.5 ? 1 : -1
+    let dx = ax * (1 - ENEMY_DODGE_SIDESTEP) + (-ay * side) * ENEMY_DODGE_SIDESTEP
+    let dy = ay * (1 - ENEMY_DODGE_SIDESTEP) + (ax * side) * ENEMY_DODGE_SIDESTEP
+    const dl = Math.hypot(dx, dy) || 1
+    dx /= dl; dy /= dl
+    const dist = ENEMY_DODGE_DISTANCE * (0.7 + Math.random() * 0.6)
+    enemy.targetX = clamp(enemy.x + dx * dist, 0, Math.max(w - enemy.size, 0))
+    enemy.targetY = clamp(enemy.y + dy * dist, 0, Math.max(h - enemy.size, 0))
+    enemy.followRate = ENEMY_DODGE_FOLLOW_RATE * getUfoSpeedMultiplier()
   }
 
   // Grows the live enemy list to match the current level (never shrinks - enemies persist
@@ -649,34 +700,36 @@ export default function useSpaceGame (isActive) {
     radius: enemy.size / 2 + PROJECTILE_HIT_PADDING,
   })
 
-  // Combines the ship's current facing angle with its current warp-stretch factor into
-  // a single transform - kept in one place so rotateShip and the warp effect (which run
-  // independently of each other) never stomp on each other's half of the transform string.
-  // The 1/shipStretch on the perpendicular axis keeps the "volume" roughly constant
-  // (classic squash-and-stretch), so a taller ship also looks a touch narrower.
-  const applyShipTransform = () => {
-    shipPos.transform = `rotate(${shipAngle.value}deg) scale(${1 / shipStretch}, ${shipStretch})`
+  // --- Coordinate bridge -----------------------------------------------------
+  // Single source of truth for turning a pointer event into world coordinates.
+  // World space = container pixels: origin at the container's top-left, +x right,
+  // +y down. Every input handler (and, from Phase 2 on, the Three.js renderer)
+  // shares this one space, so nothing needs to measure the DOM to reason about
+  // where things are. Both axes are container-relative here; the original code
+  // leaned on #about spanning the full page width to treat x as viewport-relative,
+  // which was fragile off the left edge / in other layouts.
+  const pointerToWorld = (event) => {
+    const rect = container.value.getBoundingClientRect()
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    }
   }
 
   const rotateShip = (event) => {
-    if (!container.value || !ship.value) return
+    if (!container.value) return
     dismissHint()
 
-    const containerOffset = container.value.getBoundingClientRect()
+    const pointer = pointerToWorld(event)
+    lastPointerX = pointer.x
+    lastPointerY = pointer.y
 
-    lastPointerX = event.x
-    lastPointerY = event.y - containerOffset.top
-
-    const pointerBox = ship.value.getBoundingClientRect(),
-        centerY = pointerBox.top + ship.value.offsetHeight - containerOffset.top,
-        centerX = pointerBox.left + ship.value.offsetWidth - containerOffset.left
-
-    const radians = Math.atan2(event.x - centerX, (event.y - containerOffset.top) - centerY)
+    // Aim from the ship's centre (shipX/shipY) - no DOM measurement.
+    const radians = Math.atan2(pointer.x - shipX, pointer.y - shipY)
     const degree = (radians * (180 / Math.PI) * -1) + 180
 
     shipAngle.value = degree
     hasFacing = true
-    applyShipTransform()
   }
 
   const spawnWarpFlash = (x, y) => {
@@ -696,45 +749,37 @@ export default function useSpaceGame (isActive) {
     }, WARP_FLASH_FADE_DURATION + 20)
   }
 
-  // Purely a visual flourish for a "fly here" click - stretches the ship along its
-  // facing axis then eases back to normal, plus a light burst at the departure point.
-  // Doesn't touch shipX/Y/target at all, so it can't affect actual movement.
+  // Purely a visual flourish for a "fly here" click - snaps the ship into a stretched pose
+  // that the render loop then eases back to neutral (see the shipStretch settle in tick),
+  // plus a light burst at the departure point. Doesn't touch shipX/Y/target, so it can't
+  // affect actual movement.
   const triggerWarpEffect = () => {
     spawnWarpFlash(shipX, shipY)
-
-    // Snap to the stretched pose instantly (no transition), then let a transition ease
-    // it back to normal - a quick "warp stretch" pop rather than a gradual stretch.
-    shipPos[CSS.transitionDuration] = '0s'
     shipStretch = WARP_STRETCH
-    applyShipTransform()
-
-    requestAnimationFrame(() => {
-      shipPos[CSS.transitionDuration] = `${WARP_SETTLE_DURATION}ms`
-      shipStretch = 1
-      applyShipTransform()
-    })
-
-    // Rotation normally responds within 0.1s; restore that after the warp settles so
-    // the brief slower transition here doesn't linger and make aiming feel sluggish.
-    clearTimeout(warpSettleTimeoutId)
-    warpSettleTimeoutId = setTimeout(() => {
-      shipPos[CSS.transitionDuration] = '0.1s'
-    }, WARP_SETTLE_DURATION + 20)
   }
 
-  // The player's own ship hit circle (still read from the DOM, since the ship is a single
-  // element), so enemy return fire can check for a hit against its on-screen position/size.
-  const getShipHitCircle = () => {
-    if (!ship.value || !container.value) return null
-    const shipRect = ship.value.getBoundingClientRect()
-    const containerOffset = container.value.getBoundingClientRect()
+  // The player's own ship hit circle, straight from its JS-tracked centre and fixed size -
+  // no DOM read. A constant radius gives a steadier hitbox than the old transformed-
+  // bounding-box read, which grew and shrank as the ship rotated.
+  const getShipHitCircle = () => ({
+    x: shipX,
+    y: shipY,
+    radius: SHIP_SIZE / 2 + PROJECTILE_HIT_PADDING,
+  })
 
-    return {
-      x: shipRect.left + shipRect.width / 2,
-      y: (shipRect.top + shipRect.height / 2) - containerOffset.top,
-      radius: Math.max(shipRect.width, shipRect.height) / 2 + PROJECTILE_HIT_PADDING,
-    }
-  }
+  // Snapshot of the ship's render state for the Three.js renderer, which polls it
+  // once per frame. A plain getter (rather than exposing refs) keeps the hot-path
+  // shipX/shipY/shipStretch as module-local lets. Position is the ship's centre;
+  // angle is degrees, stretch is the warp factor.
+  const getShipRenderState = () => ({
+    x: shipX,
+    y: shipY,
+    angle: shipAngle.value,
+    stretch: shipStretch,
+    visible: gameState.value === GAME_STATE.PLAYING && !shipExplosion.active,
+    hit: shipHit.value,
+    shielded: shieldActive.value,
+  })
 
   // The core of a hit landing on an enemy - scoring, health/kill/respawn handling and the
   // hit/kill feedback - independent of what dealt it, so both a player projectile
@@ -820,8 +865,8 @@ export default function useSpaceGame (isActive) {
     if (gameState.value !== GAME_STATE.PLAYING || shipExplosion.active) return
 
     playDestroyedSound()
-    shipExplosion.x = shipX + 20 // ship is 40px; centre the burst on it
-    shipExplosion.y = shipY + 20
+    shipExplosion.x = shipX // shipX/shipY is already the ship's centre
+    shipExplosion.y = shipY
     shipExplosion.active = true
     lives.value = Math.max(0, lives.value - 1)
 
@@ -925,6 +970,13 @@ export default function useSpaceGame (isActive) {
     } else {
       spawnShot(0)
     }
+  }
+
+  // Remove a projectile by id - e.g. it was used up striking a background asteroid. Owned
+  // by the renderer (which handles asteroid collision), so it's exposed for that.
+  const consumeProjectile = (id) => {
+    const index = projectiles.findIndex(p => p.id === id)
+    if (index !== -1) projectiles.splice(index, 1)
   }
 
   // An enemy's own return shot, aimed at the ship's current position (no lead/prediction,
@@ -1032,28 +1084,19 @@ export default function useSpaceGame (isActive) {
     }, ALLY_WARP_OUT_DURATION)
   }
 
-  // Drifts a weapon power-up in from one side of the screen - removed automatically
-  // after POWERUP_LIFESPAN if the player never flies into it.
-  const spawnPowerUp = () => {
-    if (!container.value) return
-    const availableIds = getAvailablePowerUpTypeIds()
-    if (!availableIds.length) return
-
-    const type = pickWeightedPowerUpType(availableIds)
-    const containerWidth = container.value.offsetWidth
-    const containerHeight = container.value.offsetHeight
-    const fromLeft = Math.random() < 0.5
+  // Pushes a floating pickup at (x, baseY) drifting at vx; auto-removed after POWERUP_LIFESPAN
+  // if the player never flies into it.
+  const addFloatingPowerUp = (type, x, baseY, vx) => {
     const id = nextPowerUpId++
-
     powerUps.push({
       id,
       type,
       label: POWERUP_TYPES[type].label,
       color: POWERUP_TYPES[type].color,
-      x: fromLeft ? -30 : containerWidth + 30,
-      baseY: Math.random() * Math.max(containerHeight - 40, 40) + 20,
+      x,
+      baseY,
       y: 0,
-      vx: (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED,
+      vx,
       spawnTime: null,
       state: POWERUP_STATE.FLOATING,
       radarX: 0.5,
@@ -1066,6 +1109,36 @@ export default function useSpaceGame (isActive) {
         powerUps.splice(index, 1)
       }
     }, POWERUP_LIFESPAN)
+  }
+
+  // Drifts a weapon power-up in from one side of the screen.
+  const spawnPowerUp = () => {
+    if (!container.value) return
+    const availableIds = getAvailablePowerUpTypeIds()
+    if (!availableIds.length) return
+
+    const type = pickWeightedPowerUpType(availableIds)
+    const containerWidth = container.value.offsetWidth
+    const containerHeight = container.value.offsetHeight
+    const fromLeft = Math.random() < 0.5
+    addFloatingPowerUp(
+      type,
+      fromLeft ? -30 : containerWidth + 30,
+      Math.random() * Math.max(containerHeight - 40, 40) + 20,
+      (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED
+    )
+  }
+
+  // A shattered asteroid has a chance to drop a level-appropriate pickup at the break point
+  // (world coords), drifting gently so it's grabbable. Called by the renderer, which owns
+  // asteroid collision. No-op if nothing's unlocked yet or the roll misses.
+  const maybeDropFromAsteroid = (x, y) => {
+    if (gameState.value !== GAME_STATE.PLAYING) return
+    if (Math.random() >= ASTEROID_DROP_CHANCE) return
+    const availableIds = getAvailablePowerUpTypeIds()
+    if (!availableIds.length) return
+    const type = pickWeightedPowerUpType(availableIds)
+    addFloatingPowerUp(type, x, y, (Math.random() < 0.5 ? -1 : 1) * POWERUP_DRIFT_SPEED * 0.5)
   }
 
   // Keeps rescheduling regardless of level - only actually spawns once level reaches
@@ -1129,7 +1202,7 @@ export default function useSpaceGame (isActive) {
   const fireForward = () => {
     // Nothing sensible to fire at until the ship has faced a direction at least once
     // (e.g. Space pressed before any mouse movement), and not while paused/dead.
-    if (!ship.value || !hasFacing || gameState.value !== GAME_STATE.PLAYING) return
+    if (!hasFacing || gameState.value !== GAME_STATE.PLAYING) return
 
     // Invert rotateShip's degree formula to recover the angle in radians:
     // degree = (radians * (180 / Math.PI) * -1) + 180  =>  radians = (180 - degree) * (Math.PI / 180)
@@ -1160,6 +1233,14 @@ export default function useSpaceGame (isActive) {
   }
 
   const onKeyDown = (event) => {
+    const dir = ARROW_DIRS[event.key]
+    if (dir) {
+      event.preventDefault() // don't scroll the page
+      dismissHint()
+      heldKeys[dir] = true
+      return
+    }
+
     if (event.code === 'Space' || event.key === ' ') {
       event.preventDefault()
       dismissHint()
@@ -1190,13 +1271,19 @@ export default function useSpaceGame (isActive) {
     }
   }
 
+  const onKeyUp = (event) => {
+    const dir = ARROW_DIRS[event.key]
+    if (dir) {
+      event.preventDefault()
+      heldKeys[dir] = false
+    }
+  }
+
   const ufoClicked = (event) => {
     if (gameState.value !== GAME_STATE.PLAYING) return
     dismissHint()
-    const containerOffset = container.value.getBoundingClientRect()
-    const targetX = event.x
-    const targetY = event.y - containerOffset.top
-    const radians = Math.atan2(targetX - shipX, targetY - shipY)
+    const pointer = pointerToWorld(event)
+    const radians = Math.atan2(pointer.x - shipX, pointer.y - shipY)
     fireAt(shipX, shipY, radians)
   }
 
@@ -1204,12 +1291,26 @@ export default function useSpaceGame (isActive) {
     if (gameState.value !== GAME_STATE.PLAYING) return
     dismissHint()
 
-    // Clicking an enemy uses @click.stop (it fires instead of flying), so this only ever
-    // runs for clicks on empty space.
-    const containerOffset = container.value.getBoundingClientRect()
-    shipTargetX = event.x
-    shipTargetY = event.y - containerOffset.top
+    const pointer = pointerToWorld(event)
+    shipTargetX = pointer.x
+    shipTargetY = pointer.y
     triggerWarpEffect()
+  }
+
+  // Single click entry point for the game overlay. With the UFOs rendered in-canvas
+  // there are no per-UFO DOM click targets anymore, so we hit-test here: a click on a
+  // live enemy fires at it, otherwise it's a "fly here" move. This replaces the old
+  // split of @click.stop on each UFO (fire) vs @click on the overlay (move).
+  const handleClick = (event) => {
+    if (gameState.value !== GAME_STATE.PLAYING) return
+    const p = pointerToWorld(event)
+    const onEnemy = enemies.some((enemy) => {
+      if (!enemy.visible || enemy.health <= 0) return false
+      const c = getEnemyHitCircle(enemy)
+      return Math.hypot(p.x - c.x, p.y - c.y) <= c.radius
+    })
+    if (onEnemy) ufoClicked(event)
+    else moveShip(event)
   }
 
   const tick = (time) => {
@@ -1231,25 +1332,72 @@ export default function useSpaceGame (isActive) {
       return
     }
 
-    // Ease the ship toward its target - covers a fraction of the remaining distance
-    // each frame (framerate-independent), so it starts fast and decelerates into
-    // place instead of sliding at a constant speed and snapping to a dead stop.
-    const dx = shipTargetX - shipX
-    const dy = shipTargetY - shipY
-    const distance = Math.hypot(dx, dy)
-    if (distance > ARRIVE_THRESHOLD) {
-      const followT = 1 - Math.exp(-SHIP_FOLLOW_RATE * dt)
-      shipX += dx * followT
-      shipY += dy * followT
-    } else {
-      shipX = shipTargetX
-      shipY = shipTargetY
-    }
-    shipPos.left = shipX + 'px'
-    shipPos.top = shipY + 'px'
-
     const radarW = container.value.offsetWidth
     const radarH = container.value.offsetHeight
+
+    // Arrow-key flight. Held keys thrust the ship (building velocity), it faces its travel
+    // direction, and it coasts to a stop when released. Thrusting pins the click-warp target
+    // to the current spot so the two control schemes don't fight.
+    let ix = (heldKeys.right ? 1 : 0) - (heldKeys.left ? 1 : 0)
+    let iy = (heldKeys.down ? 1 : 0) - (heldKeys.up ? 1 : 0)
+    const thrusting = ix !== 0 || iy !== 0
+    if (thrusting) {
+      const il = Math.hypot(ix, iy)
+      ix /= il; iy /= il
+      shipVX += ix * SHIP_ACCEL * dt
+      shipVY += iy * SHIP_ACCEL * dt
+      // Face the travel direction. The rendered nose points (sin a, cos a) in screen space
+      // (y up), while world +y is down, so the vertical input is negated to line the nose
+      // (and Space fire, which follows it) up with the way we're actually moving.
+      shipAngle.value = Math.atan2(ix, -iy) * (180 / Math.PI)
+      hasFacing = true
+    }
+    // Clamp speed, then decay (lightly while thrusting, harder while coasting).
+    const speed = Math.hypot(shipVX, shipVY)
+    if (speed > SHIP_MAX_SPEED) {
+      const s = SHIP_MAX_SPEED / speed
+      shipVX *= s; shipVY *= s
+    }
+    const decay = Math.exp(-(thrusting ? SHIP_THRUST_FRICTION : SHIP_COAST_FRICTION) * dt)
+    shipVX *= decay; shipVY *= decay
+    shipX += shipVX * dt
+    shipY += shipVY * dt
+
+    // While the ship is under velocity control, keep the target pinned so the warp-ease stays
+    // idle; only when stopped does a click-warp target take over and ease the ship in.
+    if (thrusting || Math.hypot(shipVX, shipVY) > SHIP_COAST_STOP) {
+      shipTargetX = shipX
+      shipTargetY = shipY
+    } else {
+      // Ease the ship toward its (click-warp) target - starts fast, decelerates into place.
+      const dx = shipTargetX - shipX
+      const dy = shipTargetY - shipY
+      if (Math.hypot(dx, dy) > ARRIVE_THRESHOLD) {
+        const followT = 1 - Math.exp(-SHIP_FOLLOW_RATE * dt)
+        shipX += dx * followT
+        shipY += dy * followT
+      } else {
+        shipX = shipTargetX
+        shipY = shipTargetY
+      }
+    }
+
+    // Keep the ship on the field (shipX/shipY is the centre, so inset by half its size),
+    // killing only the into-wall velocity so it slides along edges instead of sticking.
+    const minX = SHIP_SIZE / 2
+    const maxX = Math.max(minX, radarW - SHIP_SIZE / 2)
+    const minY = SHIP_SIZE / 2
+    const maxY = Math.max(minY, radarH - SHIP_SIZE / 2)
+    if (shipX < minX) { shipX = minX; if (shipVX < 0) shipVX = 0 } else if (shipX > maxX) { shipX = maxX; if (shipVX > 0) shipVX = 0 }
+    if (shipY < minY) { shipY = minY; if (shipVY < 0) shipVY = 0 } else if (shipY > maxY) { shipY = maxY; if (shipVY > 0) shipVY = 0 }
+
+    // Warp squash-and-stretch eases back to neutral here (the renderer reads shipStretch
+    // directly each frame), replacing the old CSS-transition-driven settle.
+    if (shipStretch !== 1) {
+      shipStretch = 1 + (shipStretch - 1) * Math.exp(-WARP_SETTLE_RATE * dt)
+      if (Math.abs(shipStretch - 1) < 0.01) shipStretch = 1
+    }
+
     radarShip.x = clamp(shipX / radarW, 0, 1)
     radarShip.y = clamp(shipY / radarH, 0, 1)
 
@@ -1274,18 +1422,21 @@ export default function useSpaceGame (isActive) {
 
       const hitCircle = getEnemyHitCircle(enemy)
 
-      // Idle wander on its own timer.
+      // Idle wander on its own timer: a gentle drift nearby, with the odd depth change so it
+      // still "breathes" in size without a screen-wide hop.
       if (time >= enemy.nextWanderAt) {
-        enemy.nextWanderAt = time + Math.ceil(Math.random() * ENEMY_WANDER_INTERVAL)
-        randomizeEnemy(enemy)
+        enemy.nextWanderAt = time + ENEMY_WANDER_INTERVAL * (0.4 + Math.random() * 0.6)
+        if (Math.random() < 0.5) rerollEnemyDepth(enemy)
+        wanderNearby(enemy, radarW, radarH)
       }
 
       // Flee if the cursor lingers nearby (rate-limited; cooldown/radius scale with level).
+      // A smooth, curving slip away rather than a teleport to a random spot.
       if (lastPointerX !== null && (time - enemy.lastFleeTime) >= getFleeCooldown()) {
         const pointerDistance = Math.hypot(lastPointerX - hitCircle.x, lastPointerY - hitCircle.y)
         if (pointerDistance <= getFleeRadius() + hitCircle.radius) {
           enemy.lastFleeTime = time
-          randomizeEnemy(enemy)
+          dodgeCursor(enemy, radarW, radarH)
         }
       }
 
@@ -1490,7 +1641,6 @@ export default function useSpaceGame (isActive) {
 
   const clearAllTimers = () => {
     clearTimeout(scorePulseTimeoutId)
-    clearTimeout(warpSettleTimeoutId)
     clearTimeout(shipHitTimeoutId)
     clearTimeout(powerUpSpawnTimeoutId)
     clearTimeout(allyPhaseTimeoutId)
@@ -1531,10 +1681,13 @@ export default function useSpaceGame (isActive) {
     gameState.value = GAME_STATE.PLAYING
     shipExplosion.active = false
 
-    shipX = 0
-    shipY = 0
-    shipTargetX = 0
-    shipTargetY = 0
+    shipX = SHIP_SIZE / 2
+    shipY = SHIP_SIZE / 2
+    shipTargetX = SHIP_SIZE / 2
+    shipTargetY = SHIP_SIZE / 2
+    shipVX = 0
+    shipVY = 0
+    heldKeys.up = heldKeys.down = heldKeys.left = heldKeys.right = false
     shipStretch = 1
     shipAngle.value = 0
     hasFacing = false
@@ -1542,9 +1695,6 @@ export default function useSpaceGame (isActive) {
     lastPointerY = null
     lastFireTime = 0
     lastFrameTime = null
-    shipPos.left = '0px'
-    shipPos.top = '0px'
-    applyShipTransform()
   }
 
   // Sets up a fresh game (state + enemies + spawn timer) WITHOUT touching the rAF loop, so
@@ -1605,7 +1755,6 @@ export default function useSpaceGame (isActive) {
 
   return {
     container,
-    ship,
     score,
     bestScore,
     shipHit,
@@ -1618,6 +1767,8 @@ export default function useSpaceGame (isActive) {
     enemyHealthRatio,
     healthColor,
     projectiles,
+    consumeProjectile,
+    maybeDropFromAsteroid,
     warpFlashes,
     powerUps,
     activeBuffs,
@@ -1634,10 +1785,12 @@ export default function useSpaceGame (isActive) {
     continueGame,
     restartGame,
     radarShip,
-    shipPos,
     rotateShip,
     moveShip,
+    handleClick,
     onKeyDown,
+    onKeyUp,
     ufoClicked,
+    getShipRenderState,
   }
 }

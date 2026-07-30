@@ -14,9 +14,9 @@
     <meta name="msapplication-TileColor" content="#2b5797">
     <meta name="theme-color" content="#ffffff">
 
-    <title><%= htmlWebpackPlugin.options.title %></title>
+    <title>Tyson McCarney - Developer Profile</title>
     <meta name="description" content="My personal developer profile website"/>
-    <meta property="og:title" content="<%= htmlWebpackPlugin.options.title %>"/>
+    <meta property="og:title" content="Tyson McCarney - Developer Profile"/>
     <meta property="og:type" content="website"/>
     <meta property="og:description" content="My personal developer profile website"/>
     <meta property="og:url" content="https://tysonmccarney.com"/>
@@ -24,10 +24,11 @@
 </head>
 <body>
 <noscript>
-    <strong>We're sorry but <%= htmlWebpackPlugin.options.title %> doesn't work properly without JavaScript enabled.
+    <strong>We're sorry but this site doesn't work properly without JavaScript enabled.
         Please enable it to continue.</strong>
 </noscript>
 <div id="app"></div>
+<script type="module" src="/src/main.js"></script>
 
 <!--Required for netlify forms due to client side rendering-->
 <form name="contact" netlify netlify-honeypot="bot-field" hidden>

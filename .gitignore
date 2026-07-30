@@ -21,3 +21,7 @@ pnpm-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+# Local Three.js planning notes (keep untracked)
+THREEJS_ENHANCEMENTS.md
+THREEJS_MIGRATION_PLAN.md
