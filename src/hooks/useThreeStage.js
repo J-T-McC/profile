@@ -72,6 +72,7 @@ const BOLT_STYLES = {
   alien: { core: 12, rgb: '134,239,172', glow: '74,222,128' },
   laser: { core: 16, rgb: '236,254,255', glow: '34,211,238' },
 }
+const BOLT_STREAK_SCALE = 0.05 // px of tracer length per px/s of bolt speed (capped in reconcileBolts)
 
 // Mirrors the old CSS z-index stack.
 const RENDER_ORDER = {
@@ -1252,9 +1253,13 @@ export default function useThreeStage (active, game) {
       const [x2, y2] = toScene(a.beamX2, a.beamY2)
       beamMesh.position.set((x1 + x2) / 2, (y1 + y2) / 2, 0)
       beamMesh.rotation.z = Math.atan2(y2 - y1, x2 - x1)
-      beamMesh.scale.set(Math.hypot(x2 - x1, y2 - y1), BEAM_THICKNESS, 1)
       const bp = clamp01((t - beamMesh.userData.start) / BEAM_DURATION)
-      beamMesh.material.opacity = bp < 0.25 ? lerp(0.2, 1, bp / 0.25) : lerp(1, 0, (bp - 0.25) / 0.75)
+      const env = bp < 0.25 ? lerp(0.2, 1, bp / 0.25) : lerp(1, 0, (bp - 0.25) / 0.75)
+      // Energized flicker: fast, slightly chaotic jitter in brightness and thickness so the
+      // beam crackles rather than reading as a flat quad.
+      const flick = 0.7 + 0.3 * Math.abs(Math.sin(t * 60) * Math.cos(t * 23 + 1))
+      beamMesh.scale.set(Math.hypot(x2 - x1, y2 - y1), BEAM_THICKNESS * (0.85 + 0.35 * flick), 1)
+      beamMesh.material.opacity = env * flick
     } else {
       beamMesh.userData.active = false
     }
@@ -1367,9 +1372,14 @@ export default function useThreeStage (active, game) {
         boltMeshes.set(p.id, mesh)
       }
       const core = BOLT_STYLES[kind].core
-      const footprint = core * 2
+      const width = core * 2
+      // Tracer: stretch the glow into a streak along the direction of travel, scaled by
+      // speed (faster shots = longer streaks). The radial glow reads as a rounded lozenge.
+      const speed = Math.hypot(p.vx, p.vy)
+      const len = Math.min(Math.max(speed * BOLT_STREAK_SCALE, width), width * 4)
       mesh.position.set(...toScene(p.x + core / 2, p.y + core / 2), 0)
-      mesh.scale.set(footprint, footprint, 1)
+      mesh.rotation.z = speed > 0.001 ? Math.atan2(-p.vy, p.vx) : 0 // scene +y is up, so flip vy
+      mesh.scale.set(len, width, 1)
     }
     for (const [id, mesh] of boltMeshes) {
       if (!bolts.some((p) => p.id === id)) {
