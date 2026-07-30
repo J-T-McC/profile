@@ -30,6 +30,8 @@ const BG_FAR = 320 // farthest
 const BG_PARALLAX = 0.5 // how far the bg camera slides with the ship (world units) - subtle
 const BG_PARALLAX_RATE = 2.5 // easing toward the parallax target (per second)
 const BG_DRIFT = 0.005 // slow galactic spin (rad/s)
+const NEBULA_INTENSITY = 0.5 // overall opacity of the fbm nebula clouds (0 = off)
+const NEBULA_SPEED = 0.015 // how fast the clouds churn
 
 const ALLY_SIZE = 64 // matches ALLY_SIZE in useSpaceGame
 const ALLY_HEIGHT = ALLY_SIZE * 1.2
@@ -157,6 +159,8 @@ export default function useThreeStage (active, game) {
   let starField = null
   let starMat = null
   let starTexture = null
+  let nebula = null
+  let nebulaMat = null
 
   // Entities / layers.
   let bgMesh = null
@@ -395,6 +399,62 @@ export default function useThreeStage (active, game) {
     bgScene = new THREE.Scene()
     bgCamera = new THREE.PerspectiveCamera(60, viewWidth / viewHeight, 0.1, BG_FAR + 40)
     // Looks down -z by default; parallax slides it in x/y (see updateBackground).
+
+    // A shader nebula on a big plane behind all the stars: layered fbm noise tinted through
+    // a deep-space palette, churning slowly. Rendered first (behind the additive stars) and
+    // parallaxes gently with the perspective camera like everything else in this scene.
+    nebulaMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: NEBULA_INTENSITY },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform float uTime;
+        uniform float uIntensity;
+        float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float noise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p);
+          float a = hash(i), b = hash(i + vec2(1.0, 0.0)), c = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+        }
+        float fbm(vec2 p) {
+          float v = 0.0, a = 0.5;
+          for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+          return v;
+        }
+        void main() {
+          vec2 p = vUv * 3.0;
+          float t = uTime;
+          float n = fbm(p + vec2(t, t * 0.5));
+          float n2 = fbm(p * 1.8 + vec2(-t * 0.7, t * 0.35) + 11.0);
+          vec3 deep = vec3(0.05, 0.02, 0.12);
+          vec3 magenta = vec3(0.34, 0.07, 0.42);
+          vec3 blue = vec3(0.07, 0.14, 0.5);
+          vec3 col = mix(deep, magenta, smoothstep(0.3, 0.75, n));
+          col = mix(col, blue, smoothstep(0.5, 1.0, n2));
+          float density = smoothstep(0.35, 0.95, n * 0.6 + n2 * 0.5);
+          gl_FragColor = vec4(col, density * uIntensity);
+        }
+      `,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    })
+    const nebulaSize = BG_FAR * 3
+    nebula = new THREE.Mesh(new THREE.PlaneGeometry(nebulaSize, nebulaSize), nebulaMat)
+    nebula.position.z = -(BG_FAR + 5) // just in front of the far clip plane, behind the stars
+    nebula.renderOrder = -1
+    nebula.frustumCulled = false
+    bgScene.add(nebula)
 
     const positions = new Float32Array(BG_STAR_COUNT * 3)
     const colors = new Float32Array(BG_STAR_COUNT * 3)
@@ -913,10 +973,11 @@ export default function useThreeStage (active, game) {
 
   // Ease the bg camera toward a parallax offset driven by the ship, slowly spin the field,
   // then render the perspective starfield into its target (shown on the ortho bg quad).
-  const renderBackground = (dt) => {
+  const renderBackground = (t, dt) => {
     if (!bgScene || !bgCamera || !bgRT) return
 
     starField.rotation.z += BG_DRIFT * dt
+    if (nebulaMat && !prefersReducedMotion) nebulaMat.uniforms.uTime.value = t * NEBULA_SPEED
 
     const s = game.getShipRenderState()
     let tx = 0
@@ -1304,7 +1365,7 @@ export default function useThreeStage (active, game) {
     }
 
     // Draw the perspective starfield into its target before the ortho scene samples it.
-    renderBackground(dt)
+    renderBackground(t, dt)
 
     if (bloomComposer && finalComposer) {
       camera.layers.set(BLOOM_LAYER) // bloom pass: only the energy objects
@@ -1484,9 +1545,13 @@ export default function useThreeStage (active, game) {
       starField.geometry.dispose()
       starField.material.dispose()
     }
+    if (nebula) {
+      nebula.geometry.dispose()
+      nebula.material.dispose()
+    }
     starTexture?.dispose?.()
     bgRT?.dispose?.()
-    bgScene = bgCamera = bgRT = starField = starMat = starTexture = null
+    bgScene = bgCamera = bgRT = starField = starMat = starTexture = nebula = nebulaMat = null
 
     for (const a of asteroids) {
       scene?.remove(a.mesh)
