@@ -1,5 +1,5 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
-import { POWERUP_STATE } from '@/hooks/useSpaceGame'
+import { POWERUP_STATE, PROJECTILE_STATE } from '@/hooks/useSpaceGame'
 import enterpriseUrl from '@/assets/enterprise.svg'
 
 // Phase 2-4 Three.js renderer. Draws every world entity - ship, UFOs, projectiles,
@@ -70,7 +70,7 @@ const UFO_DESTROYED_COLOR = 0xfde047 // ufo-destroyed yellow
 const BOLT_STYLES = {
   player: { core: 7, rgb: '252,165,165', glow: '248,113,113' }, // smaller round bolt
   alien: { core: 12, rgb: '134,239,172', glow: '74,222,128' },
-  laser: { core: 16, rgb: '236,254,255', glow: '34,211,238' },
+  laser: { core: 10, rgb: '236,254,255', glow: '34,211,238' },
 }
 const BOLT_STREAK_SCALE = 0.05 // px of tracer length per px/s of bolt speed (capped in reconcileBolts)
 
@@ -1397,6 +1397,29 @@ export default function useThreeStage (active, game) {
       }
       const core = BOLT_STYLES[kind].core
       const width = core * 2
+
+      // Impact: once the shot stops flying (hit / intercepted), burst absorption sparks once
+      // and hide the bolt, so it doesn't sit frozen at the impact point through its hit anim.
+      if (p.state !== PROJECTILE_STATE.FLYING) {
+        if (mesh.userData.impacted !== p.state) {
+          mesh.userData.impacted = p.state
+          if (p.state === PROJECTILE_STATE.HIT || p.state === PROJECTILE_STATE.INTERCEPTED) {
+            const [ix, iy] = toScene(p.x + core / 2, p.y + core / 2)
+            emitBurst(ix, iy, {
+              count: 14,
+              color: `rgb(${BOLT_STYLES[kind].rgb})`,
+              speed: 110, speedVar: 0.7,
+              life: 0.32, lifeVar: 0.5,
+              size0: Math.max(3, core * 0.6), size1: 0.5, drag: 6, // high drag = quick "absorb"
+            })
+          }
+        }
+        mesh.visible = false
+        continue
+      }
+      mesh.visible = true
+      mesh.userData.impacted = undefined
+
       // Comet tracer: length scales with speed (capped). The head (+x of the texture) sits at
       // the projectile's leading point and the tail trails behind along -velocity.
       const speed = Math.hypot(p.vx, p.vy)
