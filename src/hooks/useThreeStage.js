@@ -33,6 +33,24 @@ const BG_DRIFT = 0.005 // slow galactic spin (rad/s)
 const NEBULA_INTENSITY = 0.1 // overall opacity of the fbm nebula clouds (0 = off)
 const NEBULA_SPEED = 0.015 // how fast the clouds churn
 
+// A planet occasionally drifts across the far background (in the perspective bg scene).
+const PLANET_DEPTH = 200 // world units in front of the bg camera
+const PLANET_MIN_RADIUS = 30
+const PLANET_MAX_RADIUS = 58
+const PLANET_SPEED = 7 // world units/s - a very slow crossing
+const PLANET_GAP_MIN = 18 // s hidden between crossings
+const PLANET_GAP_MAX = 45
+const PLANET_SPIN = 0.03 // rad/s axial spin
+// Surface palettes: low/high blend by fbm noise; atmo tints the rim glow; banded = gas
+// giant latitude stripes; ice = polar cap strength.
+const PLANET_PALETTES = [
+  { low: 0x1b3a6b, high: 0x2f7a3a, atmo: 0x3aa0ff, banded: false, ice: 0.9 }, // earthy
+  { low: 0x6b3a2a, high: 0xb0895a, atmo: 0xff8a4a, banded: false, ice: 0.2 }, // rocky / mars
+  { low: 0x7a5a2a, high: 0xd9c08a, atmo: 0xffd98a, banded: true, ice: 0.0 }, // tan gas giant
+  { low: 0x2a2a4a, high: 0x6a5aa0, atmo: 0x9a7aff, banded: true, ice: 0.0 }, // violet gas giant
+  { low: 0x123a3a, high: 0x2aa0a0, atmo: 0x5affff, banded: false, ice: 0.6 }, // teal ice world
+]
+
 const ALLY_SIZE = 64 // matches ALLY_SIZE in useSpaceGame
 const ALLY_HEIGHT = ALLY_SIZE * 1.2
 const ALLY_WARP_DURATION = 0.7 // s, matches CSS ally-warp-in/out
@@ -161,6 +179,15 @@ export default function useThreeStage (active, game) {
   let starTexture = null
   let nebula = null
   let nebulaMat = null
+  let planetGroup = null
+  let planetCore = null
+  let planetAtmoMat = null
+  let planetLight = null
+  let planetAmbient = null
+  let planetActive = false
+  let planetNextAt = 0
+  let planetVX = 0
+  let planetVY = 0
 
   // Entities / layers.
   let bgMesh = null
@@ -452,7 +479,7 @@ export default function useThreeStage (active, game) {
     const nebulaSize = BG_FAR * 3
     nebula = new THREE.Mesh(new THREE.PlaneGeometry(nebulaSize, nebulaSize), nebulaMat)
     nebula.position.z = -(BG_FAR + 5) // just in front of the far clip plane, behind the stars
-    nebula.renderOrder = -1
+    nebula.renderOrder = -2 // behind the planet (-1)
     nebula.frustumCulled = false
     bgScene.add(nebula)
 
@@ -521,6 +548,126 @@ export default function useThreeStage (active, game) {
     }))
     bgMesh.renderOrder = RENDER_ORDER.bg
     scene.add(bgMesh)
+  }
+
+  // The far horizontal extent of the bg frustum at the planet's depth (for entry/exit).
+  const planetHalfWidth = () => Math.tan((60 / 2) * (Math.PI / 180)) * PLANET_DEPTH * bgCamera.aspect
+
+  // Bake a procedural surface into the planet's vertex colours: fbm noise blends the palette
+  // (or gas-giant latitude bands), with optional polar ice and a little tonal variation.
+  const bakePlanetColors = (geo, pal) => {
+    const cLow = new THREE.Color(pal.low)
+    const cHigh = new THREE.Color(pal.high)
+    const white = new THREE.Color(0xffffff)
+    const pos = geo.attributes.position
+    const colAttr = geo.attributes.color
+    const v = new THREE.Vector3()
+    const col = new THREE.Color()
+    const ox = Math.random() * 50; const oy = Math.random() * 50; const oz = Math.random() * 50
+    const freq = 1.4 + Math.random() * 1.6
+    const bands = 4 + Math.floor(Math.random() * 5)
+    const ss = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t) }
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).normalize()
+      let n = 0; let a = 0.5; let f = freq
+      for (let o = 0; o < 4; o++) { n += a * noise.noise(v.x * f + ox, v.y * f + oy, v.z * f + oz); f *= 2; a *= 0.5 }
+      n = n * 0.5 + 0.5
+      const mixv = pal.banded ? ss(-0.6, 0.6, Math.sin(v.y * bands * Math.PI) + (n - 0.5) * 1.2) : ss(0.45, 0.62, n)
+      col.copy(cLow).lerp(cHigh, mixv)
+      if (pal.ice > 0) col.lerp(white, ss(0.8, 0.96, Math.abs(v.y)) * pal.ice)
+      col.multiplyScalar(0.82 + 0.18 * n)
+      colAttr.setXYZ(i, col.r, col.g, col.b)
+    }
+    colAttr.needsUpdate = true
+  }
+
+  const buildPlanet = () => {
+    planetGroup = new THREE.Group()
+
+    const coreGeo = new THREE.SphereGeometry(1, 48, 32)
+    coreGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(coreGeo.attributes.position.count * 3), 3))
+    planetCore = new THREE.Mesh(coreGeo, new THREE.MeshStandardMaterial({
+      vertexColors: true, roughness: 0.95, metalness: 0, transparent: true,
+    }))
+    planetCore.renderOrder = -1
+    planetGroup.add(planetCore)
+
+    // Atmosphere: a slightly larger back-side shell with a fresnel rim glow.
+    planetAtmoMat = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: new THREE.Color(0x3aa0ff) } },
+      vertexShader: `
+        varying vec3 vN; varying vec3 vView;
+        void main() {
+          vN = normalize(normalMatrix * normal);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vView = normalize(-mv.xyz);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vN; varying vec3 vView; uniform vec3 uColor;
+        void main() {
+          float fres = pow(1.0 - max(dot(vN, vView), 0.0), 3.0);
+          gl_FragColor = vec4(uColor, fres);
+        }
+      `,
+      transparent: true, blending: THREE.AdditiveBlending, side: THREE.BackSide, depthWrite: false,
+    })
+    const atmo = new THREE.Mesh(new THREE.SphereGeometry(1.06, 48, 32), planetAtmoMat)
+    atmo.renderOrder = -1
+    planetGroup.add(atmo)
+
+    planetGroup.visible = false
+    bgScene.add(planetGroup)
+
+    // Lights just for the planet (stars/nebula are unlit shaders and ignore them). Fixed
+    // direction -> a consistent terminator; a little ambient keeps the night side from black.
+    planetLight = new THREE.DirectionalLight(0xfff4e6, 2.6)
+    planetLight.position.set(-0.6, 0.35, 0.7)
+    planetAmbient = new THREE.AmbientLight(0x223044, 0.25)
+    bgScene.add(planetLight, planetAmbient)
+
+    planetNextAt = 4 // first crossing a few seconds in
+  }
+
+  const respawnPlanet = () => {
+    const radius = PLANET_MIN_RADIUS + Math.random() * (PLANET_MAX_RADIUS - PLANET_MIN_RADIUS)
+    planetGroup.scale.setScalar(radius)
+    const pal = PLANET_PALETTES[(Math.random() * PLANET_PALETTES.length) | 0]
+    bakePlanetColors(planetCore.geometry, pal)
+    planetAtmoMat.uniforms.uColor.value.set(pal.atmo)
+    planetCore.rotation.set(Math.random() * 0.6 - 0.3, Math.random() * Math.PI * 2, Math.random() * 0.4 - 0.2)
+
+    const halfH = Math.tan((60 / 2) * (Math.PI / 180)) * PLANET_DEPTH
+    const dir = Math.random() < 0.5 ? 1 : -1
+    if (prefersReducedMotion) {
+      planetVX = 0; planetVY = 0
+      planetGroup.position.set(dir * planetHalfWidth() * 0.35, (Math.random() * 2 - 1) * halfH * 0.35, -PLANET_DEPTH)
+    } else {
+      planetVX = dir * PLANET_SPEED * (0.7 + Math.random() * 0.6)
+      planetVY = (Math.random() * 2 - 1) * PLANET_SPEED * 0.15
+      planetGroup.position.set(-dir * (planetHalfWidth() + radius + 12), (Math.random() * 2 - 1) * halfH * 0.5, -PLANET_DEPTH)
+    }
+    planetGroup.visible = true
+    planetActive = true
+  }
+
+  const updatePlanet = (t, dt) => {
+    if (!planetGroup) return
+    if (planetActive) {
+      planetGroup.position.x += planetVX * dt
+      planetGroup.position.y += planetVY * dt
+      if (!prefersReducedMotion) planetCore.rotation.y += PLANET_SPIN * dt
+      const edge = planetHalfWidth() + planetGroup.scale.x + 20
+      const px = planetGroup.position.x
+      if ((planetVX > 0 && px > edge) || (planetVX < 0 && px < -edge)) {
+        planetActive = false
+        planetGroup.visible = false
+        planetNextAt = t + PLANET_GAP_MIN + Math.random() * (PLANET_GAP_MAX - PLANET_GAP_MIN)
+      }
+    } else if (t >= planetNextAt) {
+      respawnPlanet()
+    }
   }
 
   const makeGlowMesh = (color, order, bloom = true) => {
@@ -978,6 +1125,7 @@ export default function useThreeStage (active, game) {
 
     starField.rotation.z += BG_DRIFT * dt
     if (nebulaMat && !prefersReducedMotion) nebulaMat.uniforms.uTime.value = t * NEBULA_SPEED
+    updatePlanet(t, dt)
 
     const s = game.getShipRenderState()
     let tx = 0
@@ -1494,6 +1642,7 @@ export default function useThreeStage (active, game) {
     prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 
     buildBackground()
+    buildPlanet()
     buildShip()
     buildAlly()
     buildParticles()
@@ -1551,9 +1700,14 @@ export default function useThreeStage (active, game) {
       nebula.geometry.dispose()
       nebula.material.dispose()
     }
+    if (planetGroup) {
+      planetGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose() })
+    }
     starTexture?.dispose?.()
     bgRT?.dispose?.()
     bgScene = bgCamera = bgRT = starField = starMat = starTexture = nebula = nebulaMat = null
+    planetGroup = planetCore = planetAtmoMat = planetLight = planetAmbient = null
+    planetActive = false
 
     for (const a of asteroids) {
       scene?.remove(a.mesh)
