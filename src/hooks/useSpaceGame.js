@@ -405,20 +405,32 @@ export default function useSpaceGame (isActive) {
 
   let audioCtx = null
 
+  // The ally phaser is a real sample (the rest are synthesized). Decoded once into an
+  // AudioBuffer and played through a GainNode, so its volume is applied deterministically
+  // and isn't subject to Apple's block on HTMLMediaElement.volume. Callback-form decode is
+  // used because older Safari's decodeAudioData doesn't return a promise.
+  let phaserBuffer = null
+  let phaserLoading = false
+  const loadPhaserBuffer = (ctx) => {
+    if (phaserBuffer || phaserLoading) return
+    phaserLoading = true
+    fetch(shipPhaserUrl)
+      .then((r) => r.arrayBuffer())
+      .then((data) => new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject)))
+      .then((buf) => { phaserBuffer = buf })
+      .catch(() => {})
+      .finally(() => { phaserLoading = false })
+  }
+
   const getAudioContext = () => {
     if (muted.value) return null
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
     if (!AudioContextClass) return null
     if (!audioCtx) audioCtx = new AudioContextClass()
     if (audioCtx.state === 'suspended') audioCtx.resume()
+    loadPhaserBuffer(audioCtx) // no-op once cached / in flight
     return audioCtx
   }
-
-  // The ally phaser is a real sample (the rest are synthesized). A plain HTMLAudioElement
-  // plays it with directly-controllable volume; a fresh clone per shot lets rapid fire
-  // overlap. The file is fetched once, then served from cache.
-  const phaserAudio = typeof Audio !== 'undefined' ? new Audio(shipPhaserUrl) : null
-  if (phaserAudio) phaserAudio.preload = 'auto'
 
   const playLaserSound = () => {
     const ctx = getAudioContext()
@@ -556,10 +568,14 @@ export default function useSpaceGame (isActive) {
   // The ally's phaser - a bright, hard-edged descending zap, distinct from the player's
   // own softer laser and the enemy's coarse sawtooth.
   const playPhaserSound = () => {
-    if (muted.value || !phaserAudio) return
-    const a = phaserAudio.cloneNode() // fresh instance so rapid shots can overlap
-    a.volume = PHASER_VOLUME
-    a.play().catch(() => {})
+    const ctx = getAudioContext()
+    if (!ctx || !phaserBuffer) return // sample decodes within ~1s of the first sound
+    const src = ctx.createBufferSource()
+    src.buffer = phaserBuffer
+    const gain = ctx.createGain()
+    gain.gain.value = PHASER_VOLUME
+    src.connect(gain).connect(ctx.destination)
+    src.start()
   }
 
   // A rising, shimmering whoosh for the ally warping in or out.
