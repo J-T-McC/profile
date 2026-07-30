@@ -30,7 +30,7 @@ const BG_FAR = 320 // farthest
 const BG_PARALLAX = 0.5 // how far the bg camera slides with the ship (world units) - subtle
 const BG_PARALLAX_RATE = 2.5 // easing toward the parallax target (per second)
 const BG_DRIFT = 0.005 // slow galactic spin (rad/s)
-const NEBULA_INTENSITY = 0.5 // overall opacity of the fbm nebula clouds (0 = off)
+const NEBULA_INTENSITY = 0.1 // overall opacity of the fbm nebula clouds (0 = off)
 const NEBULA_SPEED = 0.015 // how fast the clouds churn
 
 const ALLY_SIZE = 64 // matches ALLY_SIZE in useSpaceGame
@@ -1281,6 +1281,8 @@ export default function useThreeStage (active, game) {
             size0: Math.max(4, a.mesh.scale.x * 0.16), size1: 1, drag: 3,
           })
           addShake(3)
+          // Chance to drop a pickup at the break point (convert scene coords back to world).
+          game.maybeDropFromAsteroid?.(px, viewHeight - py)
           resetAsteroid(a, false) // send it back off an edge; the debris sells the break
           game.consumeProjectile?.(p.id) // the shot is spent on the rock
           break // this rock is gone and the bolt consumed; move to the next rock

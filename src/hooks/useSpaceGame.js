@@ -78,6 +78,7 @@ const POWERUP_LIFESPAN = 12000       // ms a spawned pickup floats around before
 const POWERUP_SPAWN_INTERVAL_MIN = 14000
 const POWERUP_SPAWN_INTERVAL_MAX = 24000
 const POWERUP_DRIFT_SPEED = 70       // px/s, horizontal drift across the screen
+const ASTEROID_DROP_CHANCE = 0.18    // chance a shattered asteroid drops a power-up
 const POWERUP_BOB_AMPLITUDE = 10     // px of vertical bobbing while it floats
 const POWERUP_BOB_FREQUENCY = 0.6    // bobs per second
 const POWERUP_COLLECT_PADDING = 16   // px of extra forgiveness added to the ship's radius for pickup
@@ -1083,28 +1084,19 @@ export default function useSpaceGame (isActive) {
     }, ALLY_WARP_OUT_DURATION)
   }
 
-  // Drifts a weapon power-up in from one side of the screen - removed automatically
-  // after POWERUP_LIFESPAN if the player never flies into it.
-  const spawnPowerUp = () => {
-    if (!container.value) return
-    const availableIds = getAvailablePowerUpTypeIds()
-    if (!availableIds.length) return
-
-    const type = pickWeightedPowerUpType(availableIds)
-    const containerWidth = container.value.offsetWidth
-    const containerHeight = container.value.offsetHeight
-    const fromLeft = Math.random() < 0.5
+  // Pushes a floating pickup at (x, baseY) drifting at vx; auto-removed after POWERUP_LIFESPAN
+  // if the player never flies into it.
+  const addFloatingPowerUp = (type, x, baseY, vx) => {
     const id = nextPowerUpId++
-
     powerUps.push({
       id,
       type,
       label: POWERUP_TYPES[type].label,
       color: POWERUP_TYPES[type].color,
-      x: fromLeft ? -30 : containerWidth + 30,
-      baseY: Math.random() * Math.max(containerHeight - 40, 40) + 20,
+      x,
+      baseY,
       y: 0,
-      vx: (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED,
+      vx,
       spawnTime: null,
       state: POWERUP_STATE.FLOATING,
       radarX: 0.5,
@@ -1117,6 +1109,36 @@ export default function useSpaceGame (isActive) {
         powerUps.splice(index, 1)
       }
     }, POWERUP_LIFESPAN)
+  }
+
+  // Drifts a weapon power-up in from one side of the screen.
+  const spawnPowerUp = () => {
+    if (!container.value) return
+    const availableIds = getAvailablePowerUpTypeIds()
+    if (!availableIds.length) return
+
+    const type = pickWeightedPowerUpType(availableIds)
+    const containerWidth = container.value.offsetWidth
+    const containerHeight = container.value.offsetHeight
+    const fromLeft = Math.random() < 0.5
+    addFloatingPowerUp(
+      type,
+      fromLeft ? -30 : containerWidth + 30,
+      Math.random() * Math.max(containerHeight - 40, 40) + 20,
+      (fromLeft ? 1 : -1) * POWERUP_DRIFT_SPEED
+    )
+  }
+
+  // A shattered asteroid has a chance to drop a level-appropriate pickup at the break point
+  // (world coords), drifting gently so it's grabbable. Called by the renderer, which owns
+  // asteroid collision. No-op if nothing's unlocked yet or the roll misses.
+  const maybeDropFromAsteroid = (x, y) => {
+    if (gameState.value !== GAME_STATE.PLAYING) return
+    if (Math.random() >= ASTEROID_DROP_CHANCE) return
+    const availableIds = getAvailablePowerUpTypeIds()
+    if (!availableIds.length) return
+    const type = pickWeightedPowerUpType(availableIds)
+    addFloatingPowerUp(type, x, y, (Math.random() < 0.5 ? -1 : 1) * POWERUP_DRIFT_SPEED * 0.5)
   }
 
   // Keeps rescheduling regardless of level - only actually spawns once level reaches
@@ -1746,6 +1768,7 @@ export default function useSpaceGame (isActive) {
     healthColor,
     projectiles,
     consumeProjectile,
+    maybeDropFromAsteroid,
     warpFlashes,
     powerUps,
     activeBuffs,
