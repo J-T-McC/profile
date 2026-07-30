@@ -120,7 +120,7 @@ const ALLY_STANDOFF = 150           // px - preferred distance it holds from the
 const ALLY_FIRE_COOLDOWN = 700      // ms between phaser beams
 const ALLY_BEAM_DURATION = 220      // ms a fired phaser beam stays drawn (must match the CSS fade)
 const ALLY_PHASER_DAMAGE = 2        // each phaser beam hits hard, like the laser buff
-const PHASER_VOLUME = 0.6           // playback gain for the ship-phaser sample
+const PHASER_VOLUME = 0.2           // playback gain for the ship-phaser sample
 
 // Power-up categories - weapon buffs are mutually exclusive with each other, but stack
 // alongside a shield, health pickups and an ally (you can hold a laser AND a shield AND
@@ -405,30 +405,20 @@ export default function useSpaceGame (isActive) {
 
   let audioCtx = null
 
-  // The ally phaser uses a real sample (the rest are synthesized). Decoded once into an
-  // AudioBuffer, lazily, the first time we have an audio context.
-  let phaserBuffer = null
-  let phaserBufferLoading = false
-  const loadPhaserBuffer = (ctx) => {
-    if (phaserBuffer || phaserBufferLoading) return
-    phaserBufferLoading = true
-    fetch(shipPhaserUrl)
-      .then((r) => r.arrayBuffer())
-      .then((data) => ctx.decodeAudioData(data))
-      .then((buf) => { phaserBuffer = buf })
-      .catch(() => {})
-      .finally(() => { phaserBufferLoading = false })
-  }
-
   const getAudioContext = () => {
     if (muted.value) return null
     const AudioContextClass = window.AudioContext || window.webkitAudioContext
     if (!AudioContextClass) return null
     if (!audioCtx) audioCtx = new AudioContextClass()
     if (audioCtx.state === 'suspended') audioCtx.resume()
-    loadPhaserBuffer(audioCtx) // no-op once cached / in flight
     return audioCtx
   }
+
+  // The ally phaser is a real sample (the rest are synthesized). A plain HTMLAudioElement
+  // plays it with directly-controllable volume; a fresh clone per shot lets rapid fire
+  // overlap. The file is fetched once, then served from cache.
+  const phaserAudio = typeof Audio !== 'undefined' ? new Audio(shipPhaserUrl) : null
+  if (phaserAudio) phaserAudio.preload = 'auto'
 
   const playLaserSound = () => {
     const ctx = getAudioContext()
@@ -566,30 +556,10 @@ export default function useSpaceGame (isActive) {
   // The ally's phaser - a bright, hard-edged descending zap, distinct from the player's
   // own softer laser and the enemy's coarse sawtooth.
   const playPhaserSound = () => {
-    const ctx = getAudioContext()
-    if (!ctx) return
-
-    // Play the ship-phaser sample once it's decoded; fall back to the synth zap meanwhile.
-    if (phaserBuffer) {
-      const src = ctx.createBufferSource()
-      src.buffer = phaserBuffer
-      const gain = ctx.createGain()
-      gain.gain.value = PHASER_VOLUME
-      src.connect(gain).connect(ctx.destination)
-      src.start()
-      return
-    }
-
-    const osc = ctx.createOscillator()
-    const gain = ctx.createGain()
-    osc.type = 'sawtooth'
-    osc.frequency.setValueAtTime(1400, ctx.currentTime)
-    osc.frequency.exponentialRampToValueAtTime(520, ctx.currentTime + 0.14)
-    gain.gain.setValueAtTime(0.07, ctx.currentTime)
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
-    osc.connect(gain).connect(ctx.destination)
-    osc.start()
-    osc.stop(ctx.currentTime + 0.16)
+    if (muted.value || !phaserAudio) return
+    const a = phaserAudio.cloneNode() // fresh instance so rapid shots can overlap
+    a.volume = PHASER_VOLUME
+    a.play().catch(() => {})
   }
 
   // A rising, shimmering whoosh for the ally warping in or out.
