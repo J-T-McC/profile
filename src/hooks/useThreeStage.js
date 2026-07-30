@@ -35,8 +35,8 @@ const NEBULA_SPEED = 0.015 // how fast the clouds churn
 
 // A planet occasionally drifts across the far background (in the perspective bg scene).
 const PLANET_DEPTH = 200 // world units in front of the bg camera
-const PLANET_MIN_RADIUS = 30
-const PLANET_MAX_RADIUS = 58
+const PLANET_MIN_RADIUS = 13
+const PLANET_MAX_RADIUS = 26
 const PLANET_SPEED = 7 // world units/s - a very slow crossing
 const PLANET_GAP_MIN = 18 // s hidden between crossings
 const PLANET_GAP_MAX = 45
@@ -585,10 +585,13 @@ export default function useThreeStage (active, game) {
 
     const coreGeo = new THREE.SphereGeometry(1, 48, 32)
     coreGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(coreGeo.attributes.position.count * 3), 3))
+    // transparent:true keeps it in the transparent queue (so it isn't forced to draw before
+    // the additive stars); a high renderOrder then draws it LAST, so its solid surface
+    // covers the stars behind it instead of them blending through.
     planetCore = new THREE.Mesh(coreGeo, new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.95, metalness: 0, transparent: true,
     }))
-    planetCore.renderOrder = -1
+    planetCore.renderOrder = 1
     planetGroup.add(planetCore)
 
     planetGroup.visible = false
