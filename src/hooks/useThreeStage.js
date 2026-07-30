@@ -181,7 +181,6 @@ export default function useThreeStage (active, game) {
   let nebulaMat = null
   let planetGroup = null
   let planetCore = null
-  let planetAtmoMat = null
   let planetLight = null
   let planetAmbient = null
   let planetActive = false
@@ -592,31 +591,6 @@ export default function useThreeStage (active, game) {
     planetCore.renderOrder = -1
     planetGroup.add(planetCore)
 
-    // Atmosphere: a slightly larger back-side shell with a fresnel rim glow.
-    planetAtmoMat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: new THREE.Color(0x3aa0ff) } },
-      vertexShader: `
-        varying vec3 vN; varying vec3 vView;
-        void main() {
-          vN = normalize(normalMatrix * normal);
-          vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          vView = normalize(-mv.xyz);
-          gl_Position = projectionMatrix * mv;
-        }
-      `,
-      fragmentShader: `
-        varying vec3 vN; varying vec3 vView; uniform vec3 uColor;
-        void main() {
-          float fres = pow(1.0 - max(dot(vN, vView), 0.0), 3.0);
-          gl_FragColor = vec4(uColor, fres);
-        }
-      `,
-      transparent: true, blending: THREE.AdditiveBlending, side: THREE.BackSide, depthWrite: false,
-    })
-    const atmo = new THREE.Mesh(new THREE.SphereGeometry(1.06, 48, 32), planetAtmoMat)
-    atmo.renderOrder = -1
-    planetGroup.add(atmo)
-
     planetGroup.visible = false
     bgScene.add(planetGroup)
 
@@ -635,7 +609,6 @@ export default function useThreeStage (active, game) {
     planetGroup.scale.setScalar(radius)
     const pal = PLANET_PALETTES[(Math.random() * PLANET_PALETTES.length) | 0]
     bakePlanetColors(planetCore.geometry, pal)
-    planetAtmoMat.uniforms.uColor.value.set(pal.atmo)
     planetCore.rotation.set(Math.random() * 0.6 - 0.3, Math.random() * Math.PI * 2, Math.random() * 0.4 - 0.2)
 
     const halfH = Math.tan((60 / 2) * (Math.PI / 180)) * PLANET_DEPTH
@@ -1706,7 +1679,7 @@ export default function useThreeStage (active, game) {
     starTexture?.dispose?.()
     bgRT?.dispose?.()
     bgScene = bgCamera = bgRT = starField = starMat = starTexture = nebula = nebulaMat = null
-    planetGroup = planetCore = planetAtmoMat = planetLight = planetAmbient = null
+    planetGroup = planetCore = planetLight = planetAmbient = null
     planetActive = false
 
     for (const a of asteroids) {
